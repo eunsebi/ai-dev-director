@@ -21,3 +21,8 @@ Changes:
 
 To list a project in the menu: add it to `config.yaml` `projects:` (also sets its verification commands), or put
 the git repo directly under a `solomon.allowed_roots` folder.
+
+## 2026-11-05 · Hide the 솔로몬 집무실 link
+
+`console/console.js` workshop header linked to `http://127.0.0.1:8710` (Solomon, the upstream author's separate,
+unpublished program). Nothing listens there in this fork, so the link is removed; `/bridge/*` APIs stay untouched.
