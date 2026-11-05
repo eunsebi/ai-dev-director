@@ -106,6 +106,14 @@ class CompanionHandler(d.DashboardHandler):
         if path == '/ops/roles':
             from core.role_settings import current
             return self._send_json({'roles': current(d.load_config()), 'csrf': self.server.bridge_token})
+        if path == '/ops/projects':
+            # Stage project menu: the same registry Solomon sees (config `projects:`, git folders under the
+            # allowed roots, past mission targets) plus the session's current project. Local origin checked above.
+            try:
+                current = (d.cached_status_payload() or {}).get('project_path') or ''
+            except Exception:
+                current = ''
+            return self._send_json({'projects': project_registry(), 'current': current})
         if path in STATIC_FILES:
             name = STATIC_FILES[path]
             body = (ROOT / 'console' / name).read_bytes()

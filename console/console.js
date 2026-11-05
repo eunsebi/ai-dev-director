@@ -10,7 +10,7 @@ function setup(){
  const css=doc.createElement('link');css.rel='stylesheet';css.href='/console.css';doc.head.append(css);
  const panel=el('section','','mission-control');panel.id='mission-control';
  const heading=el('div','','mission-heading'),identity=el('div');identity.append(el('span','ANTIGRAVITY / DEVELOPMENT WORKSPACE','mission-kicker'),el('h1','세 AI와 함께 만드는 작업실'));
- const navigation=el('div','','workspace-links');for(const [name,url] of [['솔로몬 집무실','http://127.0.0.1:8710'],['원본 화면','/classic']]){const a=el('a',name+' ↗');a.href=url;a.target='_top';navigation.append(a);}heading.append(identity,navigation);
+ const navigation=el('div','','workspace-links');for(const [name,url] of [['원본 화면','/classic']]){const a=el('a',name+' ↗');a.href=url;a.target='_top';navigation.append(a);}heading.append(identity,navigation);
  const summary=el('div','','mission-summary'),state=el('div','','mission-state');state.append(el('span','현재 작업','mission-kicker'),el('strong','연결 중'));state.lastChild.id='mission-state';
  const next=el('div','','mission-next');next.append(el('span','다음 행동','mission-kicker'),el('p','실행 기록을 읽고 있습니다.'));next.lastChild.id='mission-next';summary.append(state,next);
  const meta=el('div','','mission-meta');for(const id of ['mission-project','mission-updated','mission-tests']){const n=el('span','—');n.id=id;meta.append(n);}
