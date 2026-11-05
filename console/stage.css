@@ -152,6 +152,15 @@ body.broadcast .slot-role::after,body.replaying .slot-role::after{content:""}
 #role-menu button.on{border-color:var(--c)}
 #role-menu button small{margin-left:auto;color:var(--muted);font-size:11px}
 #role-menu button:disabled{opacity:.5;cursor:wait}
+#project-menu{position:fixed;z-index:20;min-width:280px;max-width:min(460px,calc(100vw - 16px));max-height:min(70vh,520px);overflow-y:auto;padding:8px;border-radius:14px;background:rgba(7,10,19,.96);border:1px solid var(--line2);box-shadow:0 24px 60px #000b;display:flex;flex-direction:column;gap:2px}
+#project-menu[hidden]{display:none}
+#project-menu p{margin:2px 8px 6px;font-size:11.5px;color:var(--muted)}
+#project-menu button{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:8px 10px;border-radius:9px;border:1px solid transparent;background:transparent;text-align:left;color:var(--text);font-size:13.5px}
+#project-menu button:hover{background:rgba(255,255,255,.07)}
+#project-menu button.on{border-color:var(--line2);background:rgba(255,255,255,.05)}
+#project-menu button small{color:var(--muted);font-size:11px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#project-menu button.other{margin-top:4px;border-top:1px solid var(--line);border-radius:0 0 9px 9px}
+#project-menu button:disabled{opacity:.5;cursor:wait}
 
 /* ---------- stinger: a title card each time the pipeline moves on; intro: the first three seconds */
 #stinger{--c:#fff;position:absolute;left:0;right:0;top:34%;display:flex;flex-direction:column;align-items:center;gap:6px;pointer-events:none;opacity:0}

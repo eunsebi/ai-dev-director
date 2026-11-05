@@ -75,6 +75,52 @@ function openRoleMenu(label){
   menu.hidden=false;
   menu.style.transform='translate('+Math.max(4,Math.min(r.left-c.left,c.width-menu.offsetWidth-4)).toFixed(0)+'px,'+(r.bottom-c.top+6+menu.offsetHeight>c.height?Math.max(4,r.top-c.top-menu.offsetHeight-6):r.bottom-c.top+6).toFixed(0)+'px)';   // no room below: open above the label
 }
+// ------------------------------------------------------------------ project menu (2026-11-05 fork): pick from the
+// registered projects (config `projects:`, git folders under solomon.allowed_roots, past mission targets) or browse.
+async function selectProject(path){
+  const res=await fetch('/project',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8','Accept':'application/json'},body:new URLSearchParams({path}).toString()}).then(r=>r.json());
+  return {path,ok:res.status==='ok',message:res.message||''};
+}
+function placeProjectMenu(){
+  const menu=$('project-menu'),r=$('top-project').getBoundingClientRect();
+  menu.style.top=(r.bottom+6).toFixed(0)+'px';
+  menu.style.left=Math.max(8,Math.min(r.left,window.innerWidth-menu.offsetWidth-8)).toFixed(0)+'px';
+}
+async function openProjectMenu(){
+  const menu=$('project-menu'),btn=$('top-project');
+  if(btn.disabled||replay)return;
+  if(!menu.hidden){menu.hidden=true;return;}
+  $('role-menu').hidden=true;
+  menu.replaceChildren(el('p','프로젝트 목록 불러오는 중…'));menu.hidden=false;placeProjectMenu();
+  let data;
+  try{data=await fetch('/ops/projects',{cache:'no-store'}).then(r=>{if(!r.ok)throw Error('HTTP '+r.status);return r.json();});}
+  catch(e){menu.replaceChildren(el('p','목록을 불러오지 못했습니다 · '+e.message));}
+  const busy=isLiveNow();
+  const done=async job=>{
+    for(const x of menu.querySelectorAll('button'))x.disabled=true;btn.disabled=true;
+    try{const r=await job();if(r)notice(r.ok?'작업 폴더를 바꿨습니다 · '+r.path:'선택할 수 없는 폴더입니다 · '+r.message);}
+    catch(e){notice('폴더를 바꾸지 못했습니다 · '+e.message+' (작업실 탭에서 경로를 직접 입력할 수 있습니다)');}
+    finally{menu.hidden=true;btn.disabled=false;pollStatus();pollChat();}
+  };
+  if(data){
+    const current=(data.current||'').toLowerCase(),rows=data.projects||[];
+    menu.replaceChildren(el('p',rows.length?'작업할 프로젝트'+(busy?' · 진행 중인 미션은 원래 프로젝트에서 계속됩니다':''):'등록된 프로젝트가 없습니다 · config.yaml의 projects 또는 solomon.allowed_roots에 추가하세요'));
+    for(const p of rows){
+      const on=p.path.toLowerCase()===current,b=el('button',p.name+(on?'  · 현재':''));
+      b.type='button';b.setAttribute('role','menuitem');b.classList.toggle('on',on);
+      const lm=p.last_mission;
+      b.append(el('small',p.path+(lm?' · 최근 미션 '+(lm.status||''):'')));
+      b.title=p.path;
+      b.onclick=()=>{if(on){menu.hidden=true;return;}done(()=>selectProject(p.path));};
+      menu.append(b);
+    }
+  }
+  const other=el('button','다른 폴더 선택…','other');other.type='button';other.setAttribute('role','menuitem');
+  other.append(el('small','폴더 선택 창 열기 (목록에 없는 git 프로젝트)'));
+  other.onclick=()=>done(()=>chooseProjectFolder());
+  menu.append(other);
+  placeProjectMenu();
+}
 function phaseOf(working,verifying,live){
   const w=working.find(x=>x.role==='BUILDER')||working.find(x=>x.role==='REVIEWER')||working[0];
   if(w){
@@ -372,12 +418,10 @@ function start(){
   Trinity.init($('trinity-canvas'),{onFrame});
   if(params.get('broadcast')==='1'||attract)document.body.classList.add('broadcast');   // e.g. an OBS browser source: /?attract=1
   $('tab-stage').onclick=()=>setView('stage');$('tab-workshop').onclick=()=>setView('workshop');$('attention-go').onclick=()=>setView('workshop');
-  $('top-project').onclick=async()=>{const b=$('top-project');if(b.disabled||replay)return;b.disabled=true;
-    try{const r=await chooseProjectFolder();if(r)notice(r.ok?'작업 폴더를 바꿨습니다 · '+r.path:'선택할 수 없는 폴더입니다 · '+r.message);}
-    catch(e){notice('폴더 선택 창을 열지 못했습니다 · '+e.message+' (작업실 탭에서 경로를 직접 입력할 수 있습니다)');}
-    finally{b.disabled=false;pollStatus();pollChat();}};
+  $('top-project').title='작업할 프로젝트 고르기';
+  $('top-project').onclick=e=>{e.stopPropagation();openProjectMenu();};
   for(const label of document.querySelectorAll('.slot-label')){label.title='이 역할을 맡을 AI 바꾸기';label.onclick=e=>{e.stopPropagation();openRoleMenu(label);};}
-  document.addEventListener('click',e=>{if(!e.target.closest('#role-menu'))$('role-menu').hidden=true;});
+  document.addEventListener('click',e=>{if(!e.target.closest('#role-menu'))$('role-menu').hidden=true;if(!e.target.closest('#project-menu'))$('project-menu').hidden=true;});
   $('btn-replay').onclick=startReplay;$('replay-stop').onclick=stopReplay;
   $('btn-broadcast').onclick=()=>setBroadcast(!document.body.classList.contains('broadcast'));
   document.addEventListener('fullscreenchange',()=>{if(!document.fullscreenElement&&document.body.classList.contains('broadcast'))setBroadcast(false);});
@@ -387,7 +431,7 @@ function start(){
   $('chat-text').addEventListener('input',grow);
   $('chat-text').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send($('chat-text').value);}});
   document.addEventListener('keydown',e=>{
-    if(e.key==='Escape'){$('chat-log').hidden=true;$('role-menu').hidden=true;if(replay)stopReplay();return;}
+    if(e.key==='Escape'){$('chat-log').hidden=true;$('role-menu').hidden=true;$('project-menu').hidden=true;if(replay)stopReplay();return;}
     if(e.target.closest('textarea,input,[contenteditable]')||e.ctrlKey||e.metaKey||e.altKey||document.body.dataset.view!=='stage')return;
     if(e.key==='b'||e.key==='B'||e.key==='ㅠ')setBroadcast(!document.body.classList.contains('broadcast'));
     if(e.key==='r'||e.key==='R'||e.key==='ㄱ')startReplay();});
