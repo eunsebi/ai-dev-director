@@ -46,3 +46,18 @@ head:
   allowed_tools: [mcp__claude-memory__memory_index, mcp__claude-memory__memory_search, mcp__claude-memory__memory_read]
 ```
 Measured: a chat answer that consulted the memory took ~24 s.
+
+## 2026-11-06 · Restart the dashboard right after stopping it (`fix/mac-restart-port`)
+
+Problem: on macOS, pressing 「켜기」 right after 「끄기」 failed with `DashboardAlreadyRunning … [Errno 48]` for
+~30 s. `DashboardServer.allow_reuse_address = False` (chosen for Windows, where SO_REUSEADDR allows a duplicate
+LISTEN) also blocks binding while the old connections sit in TIME_WAIT.
+
+Change: `dashboard_server.py` — `allow_reuse_address = os.name != "nt"`. On macOS/Linux SO_REUSEADDR still refuses a
+second LISTEN on the same address (measured), so single-instance holds. Windows unchanged.
+Tests: `tests/test_fork_restart_port.py` (restart after a served request + duplicate refused);
+`test_v0232_e2e_blockers.py` assertion follows the platform.
+
+Also (outside the repo): `~/Downloads/install-dashboard-apps.sh` — the 켜기 app `exec`s the server and records the
+Terminal window id in `data/dashboard-window-id`; 끄기 waits for the process to exit and closes that window by id
+(oh-my-zsh rewrites the tab title when the prompt returns, so matching by title missed it).
