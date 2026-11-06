@@ -11,6 +11,21 @@ from core.env_utils import get_sanitized_env
 class Verifier:
     """Orchestrator-driven verification executing build, test, and git checks."""
 
+    DEFAULT_TIMEOUT = 120.0
+
+    @classmethod
+    def timeout_from(cls, config: Optional[Dict[str, Any]]) -> float:
+        """[fork] Per-command time limit from config `verification.timeout_sec` (per project via `projects:`),
+        e.g. an iOS simulator test run that needs a cold boot. Missing/invalid -> 120 s; clamped to 10..1800 s."""
+        raw = ((config or {}).get("verification") or {}).get("timeout_sec")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return cls.DEFAULT_TIMEOUT
+        if value != value:                       # NaN
+            return cls.DEFAULT_TIMEOUT
+        return max(10.0, min(1800.0, value))
+
     @staticmethod
     def _execute_cmd(cmd_str: Optional[Union[str, List[str]]], cwd: Path, timeout: float = 120.0) -> Dict[str, Any]:
         if not cmd_str:

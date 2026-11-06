@@ -655,7 +655,8 @@ class Orchestrator:
         product's runtime output, not Builder changes, and must not later read as out-of-scope Builder edits."""
         build_cmd, test_cmd, lint_cmd = self._verification_cmds()
         before = self._dirty_state(worktree_path) if self._proxy() else None
-        result = Verifier.verify(worktree_path=worktree_path, build_cmd=build_cmd, test_cmd=test_cmd, lint_cmd=lint_cmd)
+        result = Verifier.verify(worktree_path=worktree_path, build_cmd=build_cmd, test_cmd=test_cmd, lint_cmd=lint_cmd,
+                                 timeout=Verifier.timeout_from(self.config))
         if before is not None:
             after = self._dirty_state(worktree_path)
             changed = {p for p, sig in after.items() if before.get(p, "absent") != sig and not SafetyPolicy.is_runtime_artifact(p)}
