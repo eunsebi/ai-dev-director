@@ -58,3 +58,16 @@
 .director-v2 .ai-card-usage.busy{color:var(--green)}
 @media(max-width:1100px){.ai-grid{grid-template-columns:1fr}}
 @media(max-width:800px){.ai-row{grid-template-columns:1fr 1fr;row-gap:2px}.ai-row.head{display:none}}
+/* [fork] phone layout (Tailscale remote use): header status gets its own full-width line instead of a 1-word column;
+   AI usage rows = role · calls · time · tokens on one line, the "담당 AI" text on a second line; column labels kept. */
+@media(max-width:800px){
+.director-v2 #hdr{gap:8px 10px;align-items:center}
+.director-v2 #hdr h1{flex:1 1 auto}
+.director-v2 #hdr .lbl[title]{flex:1 1 100%;order:2;overflow-wrap:normal;word-break:keep-all;text-transform:none;line-height:1.7}
+.director-v2 #hdr #system-mode{white-space:nowrap;margin-right:6px}
+.director-v2 #hdr #refresh-btn{order:3;margin-left:0}
+.ai-row,.ai-row.head{display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;column-gap:12px;row-gap:2px}
+.ai-row>span:nth-child(n+3){text-align:right;white-space:nowrap}
+.ai-row>span:nth-child(2){grid-column:1/-1;order:1;font-size:11px;color:var(--muted);word-break:keep-all;overflow-wrap:normal}
+.ai-row.head>span:nth-child(2),.ai-row.total>span:nth-child(2){display:none}
+}

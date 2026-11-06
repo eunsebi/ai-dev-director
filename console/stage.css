@@ -253,15 +253,19 @@ body.broadcast .slot-name{font-size:25px}
 /* ---------- responsive */
 @media(max-width:1180px){
   body.trinity{overflow:auto}
-  #stage{position:relative;inset:auto;margin:68px 14px 110px;grid-template-columns:1fr 1fr;grid-template-rows:62vh auto}
+  #stage{position:relative;inset:auto;margin:104px 14px 110px;grid-template-columns:1fr 1fr;grid-template-rows:62vh auto}
   #stage-center{grid-column:1/3;grid-row:1}
-  .top-meta .meta-chip{display:none}
+  .top-meta .meta-chip:not(#top-project){display:none}
+  /* [fork] narrow screens: the project chip gets its own row under the top bar instead of disappearing */
+  #top-project{position:fixed;z-index:6;top:62px;left:14px;max-width:calc(100vw - 28px);background:rgba(7,10,19,.88)}
+  body[data-view=workshop] #workshop{top:100px}   /* the chip row must not cover the workshop page */
 }
 @media(max-width:760px){
   #stage{grid-template-columns:1fr;grid-template-rows:58vh auto auto}
   #stage-center{grid-column:1}
   #composer{grid-template-columns:1fr}
-  #chat-peek,.brand div,.meta-clock,#top-project{display:none}
+  #chat-peek,.brand div,.meta-clock{display:none}
+  #top-project{left:10px;max-width:calc(100vw - 20px)}
   #topbar{gap:8px;padding:0 10px}
   .top-actions{gap:4px}
   .top-actions button{padding:0 8px;font-size:11px;white-space:nowrap}
