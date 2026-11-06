@@ -115,19 +115,41 @@ class DashboardServer(ThreadingHTTPServer):
 ALLOWED_HOSTNAMES = ("127.0.0.1", "localhost")
 
 
+_REMOTE_HOSTS = None
+
+
+def remote_hosts():
+    """[fork] Tailscale names allowed to reach the dashboard through `tailscale serve` (HTTPS → 127.0.0.1:<port>).
+    config.yaml `remote_access.hosts`; only MagicDNS names (*.ts.net) are accepted, so a typo can never open the
+    dashboard to a public domain. The server itself still binds 127.0.0.1 only. Read once per process."""
+    global _REMOTE_HOSTS
+    if _REMOTE_HOSTS is None:
+        try:
+            raw = (load_config().get("remote_access") or {}).get("hosts") or []
+        except Exception:
+            raw = []
+        _REMOTE_HOSTS = frozenset(h.strip().lower().rstrip(".") for h in raw
+                                  if isinstance(h, str) and h.strip().lower().rstrip(".").endswith(".ts.net"))
+    return _REMOTE_HOSTS
+
+
 def is_request_origin_allowed(headers, port: int):
     """Minimal CSRF defence for state-changing POSTs: Host must be localhost:<port>; if an Origin header is
-    present it must be http://localhost:<port> too. Returns (ok, reason)."""
+    present it must be http://localhost:<port> too. Returns (ok, reason).
+    [fork] Also accepts the configured Tailscale names (Host <name> or <name>:443, Origin https://<name>)."""
     host = (headers.get("Host") or "").strip().lower()
     allowed_hosts = {f"{h}:{port}" for h in ALLOWED_HOSTNAMES}
     if port == 80:
         allowed_hosts |= set(ALLOWED_HOSTNAMES)
-    if host not in allowed_hosts:
+    remote = remote_hosts()
+    remote_hosts_ok = set(remote) | {f"{h}:443" for h in remote}
+    if host not in allowed_hosts and host not in remote_hosts_ok:
         return False, f"bad Host header: {host!r}"
     origin = headers.get("Origin")
     if origin is not None:
         origin = origin.strip().lower()
-        if origin == "null" or origin not in {f"http://{h}" for h in allowed_hosts}:
+        allowed_origins = {f"http://{h}" for h in allowed_hosts} | {f"https://{h}" for h in remote}
+        if origin == "null" or origin not in allowed_origins:
             return False, f"foreign Origin: {origin!r}"
     return True, ""
 NO_PROJECT_MESSAGE = "HUMAN_REQUIRED: PROJECT_SELECTION_REQUIRED (no project selected; use the project form first)"
