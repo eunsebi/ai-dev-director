@@ -258,6 +258,7 @@ body.broadcast .slot-name{font-size:25px}
   .top-meta .meta-chip:not(#top-project){display:none}
   /* [fork] narrow screens: the project chip gets its own row under the top bar instead of disappearing */
   #top-project{position:fixed;z-index:6;top:62px;left:14px;max-width:calc(100vw - 28px);background:rgba(7,10,19,.88)}
+  body[data-view=workshop] #workshop{top:100px}   /* the chip row must not cover the workshop page */
 }
 @media(max-width:760px){
   #stage{grid-template-columns:1fr;grid-template-rows:58vh auto auto}
