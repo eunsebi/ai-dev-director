@@ -61,3 +61,15 @@ Tests: `tests/test_fork_restart_port.py` (restart after a served request + dupli
 Also (outside the repo): `~/Downloads/install-dashboard-apps.sh` — the 켜기 app `exec`s the server and records the
 Terminal window id in `data/dashboard-window-id`; 끄기 waits for the process to exit and closes that window by id
 (oh-my-zsh rewrites the tab title when the prompt returns, so matching by title missed it).
+
+## 2026-11-06 · Remote (mobile) use over Tailscale (`feat/remote-tailscale`)
+
+Goal: open the 8081 stage from the iPhone outside home without exposing it to the internet.
+Setup: Tailscale on the Mac and iPhone (same tailnet, MagicDNS + HTTPS certificates on) and
+`tailscale serve --bg 8081` (tailnet only, not Funnel) → `https://<mac>.<tailnet>.ts.net` proxies to 127.0.0.1:8081.
+
+Change: `dashboard_server.py` — `remote_hosts()` reads config.yaml `remote_access.hosts` (only `*.ts.net` names are
+accepted); `is_request_origin_allowed` also accepts Host `<name>`/`<name>:443` and Origin `https://<name>`.
+The server still binds 127.0.0.1 only; without the config nothing changes. Tests: `tests/test_fork_remote_tailscale.py`.
+Measured through the tailnet URL: pages/registry 200, project selection POST 200, foreign Origin 403.
+Turn off: `tailscale serve --https=443 off`.
