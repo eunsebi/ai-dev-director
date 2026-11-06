@@ -73,3 +73,11 @@ accepted); `is_request_origin_allowed` also accepts Host `<name>`/`<name>:443` a
 The server still binds 127.0.0.1 only; without the config nothing changes. Tests: `tests/test_fork_remote_tailscale.py`.
 Measured through the tailnet URL: pages/registry 200, project selection POST 200, foreign Origin 403.
 Turn off: `tailscale serve --https=443 off`.
+
+## 2026-11-06 · Phone layout (`fix/mobile-project-chip`)
+
+- `console/stage.css` — at ≤1180px the 「프로젝트 ▾」 chip gets its own fixed row under the top bar (was hidden),
+  the stage and the workshop iframe start below it.
+- `console/console.css` — ≤800px: workshop header status on its own full-width line (was one word per line);
+  AI usage rows = role · calls · time · tokens, with the provider text on a second line and column labels kept.
+Checked on the iPhone over Tailscale by the user.
