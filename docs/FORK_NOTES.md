@@ -81,3 +81,15 @@ Turn off: `tailscale serve --https=443 off`.
 - `console/console.css` — ≤800px: workshop header status on its own full-width line (was one word per line);
   AI usage rows = role · calls · time · tokens, with the provider text on a second line and column labels kept.
 Checked on the iPhone over Tailscale by the user.
+
+## 2026-11-07 · Configurable verification time limit (`feat/verify-timeout`)
+
+Problem: `Verifier` cut every build/test/lint command at a hard-coded 120 s. An iOS project whose test command
+boots a simulator (xcodebuild test) can need more.
+
+Change: `core/verifier.py` — `Verifier.timeout_from(config)` reads `verification.timeout_sec` (default 120, clamped
+10..1800, invalid → 120). `core/orchestrator.py` (`_verify`) and `core/result_manager.py` (apply-verify) pass it.
+Per project it is set through `projects: {<path>: {verification: {timeout_sec: 300}}}` (merged by
+`configure_runtime`). Tests: `tests/test_fork_verify_timeout.py`.
+Known unrelated on this Mac: `test_v020_provider_ops.py` needs `requests` (collection error → `test_v018` test_6),
+`test_v0246` test_d / `test_v302` snapshot test fail before and after, `test_v306` repair tests are flaky before and after.

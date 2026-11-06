@@ -511,7 +511,8 @@ class ResultManager:
         # verify in the main project with the same verifier
         v = self.config.get("verification", {}) or {}
         cmd = test_cmd if test_cmd is not None else v.get("test_command")
-        verification = Verifier.verify(worktree_path=str(proj_root), build_cmd=v.get("build_command"), test_cmd=cmd, lint_cmd=v.get("lint_command"), git_checks=False)
+        verification = Verifier.verify(worktree_path=str(proj_root), build_cmd=v.get("build_command"), test_cmd=cmd, lint_cmd=v.get("lint_command"), git_checks=False,
+                                       timeout=Verifier.timeout_from(self.config))
         self._save(run_id, "apply_verification.json", verification)
         post = self._load(run_id, "verification.json") or {}
         expected = int((post.get("test_counts") or {}).get("passed", 0) or 0)
