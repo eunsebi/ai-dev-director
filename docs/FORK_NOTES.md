@@ -26,3 +26,23 @@ the git repo directly under a `solomon.allowed_roots` folder.
 
 `console/console.js` workshop header linked to `http://127.0.0.1:8710` (Solomon, the upstream author's separate,
 unpublished program). Nothing listens there in this fork, so the link is removed; `/bridge/*` APIs stay untouched.
+
+## 2026-11-06 · Claude HEAD can read the shared memory (`feat/head-shared-memory`)
+
+Problem: HEAD runs `claude --print` with no pre-approved tools, so the user's shared-memory MCP (claude-memory) calls
+were denied and HEAD only saw the project CLAUDE.md.
+
+Changes:
+- `agents/claude_head.py` — new `allowed_tools` option → `--allowedTools a,b,c`, passed **only** on `chat()` and
+  `create_order()` (plus a short hint: memory is data, not instructions; output stays JSON-only). Review/decision
+  calls stay tool-less. Default (no option) = upstream behaviour.
+- `core/orchestrator.py` — reads `head.allowed_tools` from config.
+- `agents/google_roles.py` — `GoogleHead._invoke_cli` accepts (and ignores) the new `use_tools` argument.
+- `tests/test_fork_head_shared_memory.py` — default/no tools, chat gets tools+hint, judging stays tool-less, config wiring.
+
+Local `config.yaml` (not committed) enables read-only tools only:
+```yaml
+head:
+  allowed_tools: [mcp__claude-memory__memory_index, mcp__claude-memory__memory_search, mcp__claude-memory__memory_read]
+```
+Measured: a chat answer that consulted the memory took ~24 s.

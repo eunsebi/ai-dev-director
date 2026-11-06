@@ -14,7 +14,7 @@ class GoogleHead(ClaudeHead):
         super().__init__(**kwargs)
         self.provider = 'google'
 
-    def _invoke_cli(self, prompt, cwd=None):
+    def _invoke_cli(self, prompt, cwd=None, use_tools=False):   # [fork] tools are a Claude-only option; ignored here
         from core import usage
         usage.set_context(role=getattr(self, "usage_role", "HEAD"))
         runner = TriadResearchRunner(executables={'GOOGLE': self.executable}, timeout=self.timeout,

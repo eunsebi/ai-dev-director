@@ -62,7 +62,7 @@ class Orchestrator:
             from agents.google_roles import GoogleHead
             return GoogleHead(executable=executable, timeout=timeout, no_progress_timeout=no_progress_timeout)
         if provider in ("claude", "anthropic"):
-            return ClaudeHead(executable=executable, model="claude-code-cli", timeout=timeout, no_progress_timeout=no_progress_timeout, heartbeat_interval=heartbeat_interval)
+            return ClaudeHead(executable=executable, model="claude-code-cli", timeout=timeout, no_progress_timeout=no_progress_timeout, heartbeat_interval=heartbeat_interval, allowed_tools=head_cfg.get("allowed_tools"))
         elif provider in ("codex", "openai"):
             return CodexHead(executable=executable, model=model, timeout=timeout, no_progress_timeout=no_progress_timeout, heartbeat_interval=heartbeat_interval)
         elif provider == "mock":
