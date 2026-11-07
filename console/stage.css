@@ -147,6 +147,32 @@ body.broadcast button.meta-chip::after{content:""}
 .role-bar{height:3px;border-radius:3px;background:rgba(255,255,255,.07);margin-top:9px;overflow:hidden}
 .role-bar i{display:block;height:100%;width:0;background:var(--c);box-shadow:0 0 10px var(--c);transition:width 1s cubic-bezier(.2,.8,.2,1)}
 .footnote{color:var(--faint);font-size:10.5px;line-height:1.5}
+/* fork 2026-11-07: subscription windows per AI (/ops/limits) */
+.limits:not([hidden]){display:flex;flex-direction:column;gap:7px;margin-top:10px}
+#limit-rows{display:flex;flex-direction:column;gap:6px}
+.limits-toggle{display:flex;align-items:center;gap:8px;width:100%;padding:4px 2px;border:0;background:none;color:inherit;font:inherit;cursor:pointer;text-align:left}
+.limits-toggle .kicker{flex:none;white-space:nowrap}
+.limits-toggle small{flex:1;min-width:0;text-align:right;font-variant-numeric:tabular-nums;font-size:10.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;visibility:hidden}
+.limits-toggle i{font-style:normal;color:var(--muted);transition:transform .2s}
+.limits.folded .limits-toggle small{visibility:visible}
+.limits-toggle small b{font-weight:inherit}
+.limits-toggle small .dot{display:none}
+.limits-toggle small.compact .nm{display:none}
+.limits-toggle small.compact .dot{display:inline}
+.limits-toggle small.compact .sep{margin:0 -2px}
+.limits-toggle{position:relative}
+.limits.folded .limits-toggle[data-tip]:not([data-tip=""]):hover::after{content:attr(data-tip);position:absolute;right:0;top:calc(100% + 4px);z-index:20;max-width:min(320px,90vw);padding:6px 9px;border-radius:8px;border:1px solid var(--line);background:#0d1424;color:var(--text);font-size:11px;line-height:1.4;white-space:normal;text-align:left;box-shadow:0 6px 20px rgba(0,0,0,.4);pointer-events:none}
+.limits.folded .limits-toggle i{transform:rotate(-90deg)}
+.limits.folded #limit-rows{display:none}
+.limit-ai{--c:var(--faint);padding:8px 10px;border-radius:11px;border:1px solid var(--line);background:rgba(255,255,255,.03)}
+.limit-ai>b{font-size:12.5px;color:var(--c)}
+.limit-ai>small{float:right;font-size:10px;color:var(--faint)}
+.limit-w{display:grid;grid-template-columns:minmax(44px,auto) 1fr auto;align-items:center;gap:8px;margin-top:5px;font-size:11px;color:var(--muted)}
+.limit-w .bar{height:4px;border-radius:4px;background:rgba(255,255,255,.07);overflow:hidden}
+.limit-w .bar i{display:block;height:100%;background:var(--c);transition:width 1s}
+.limit-w.hot .bar i{background:#ff5c7a}
+.limit-w em{font-style:normal;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--text)}
+.limit-note{margin-top:4px;font-size:10.5px;color:var(--muted);line-height:1.45}
 
 /* ---------- labels pinned to the 3D scene */
 .slot-label{--c:#fff;position:absolute;left:0;top:0;display:flex;flex-direction:column;gap:1px;min-width:132px;align-items:center;text-align:center;padding-top:9px;will-change:transform;pointer-events:none;opacity:0;transition:opacity .8s}

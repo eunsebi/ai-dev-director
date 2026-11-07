@@ -106,6 +106,13 @@ class CompanionHandler(d.DashboardHandler):
         if path == '/ops/roles':
             from core.role_settings import current
             return self._send_json({'roles': current(d.load_config()), 'csrf': self.server.bridge_token})
+        if path == '/ops/limits':
+            # fork 2026-11-07: subscription windows per AI for the stage workload panel (see core/subscription_limits)
+            from core.subscription_limits import snapshot
+            try:
+                return self._send_json(snapshot(d.load_config()))
+            except Exception as exc:
+                return self._send_json({'error': str(exc)[:300]}, 500)
         if path == '/ops/projects':
             # Stage project menu: the same registry Solomon sees (config `projects:`, git folders under the
             # allowed roots, past mission targets) plus the session's current project. Local origin checked above.

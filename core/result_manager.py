@@ -287,8 +287,48 @@ class ResultManager:
             "approvals": [{"action": a["action"], "at": a["timestamp"], "payload": (a["payload"] or "")[:300]} for a in approvals],
         }
 
+    def sync_manual_applies(self) -> List[str]:
+        """fork 2026-11-07: a mission applied by hand (Claude Code `git apply`, then `applied` written into the mission
+        JSON) never went through apply(), so its PASS step results stayed READY and kept the 「작업실」 badge up.
+        Mark every READY result of such a mission - the steps up to and including the applied run, since each step
+        builds on the previous one - as APPLIED. Only touches READY rows; reads mission JSON only when some exist."""
+        try:
+            pending = {r["run_id"] for r in self.sm.list_pending_results()}
+        except Exception:
+            return []
+        if not pending:
+            return []
+        from core.mission import MissionStore
+        done = []
+        for m in MissionStore().all():
+            ap = m.get("applied") or {}
+            if not isinstance(ap, dict) or ap.get("status") != "applied":
+                continue
+            runs = [s.get("run_id") for s in (m.get("steps") or []) if isinstance(s, dict) and s.get("run_id")]
+            upto = runs.index(ap["run_id"]) + 1 if ap.get("run_id") in runs else len(runs)
+            for rid in runs[:upto]:
+                if rid not in pending:
+                    continue
+                note = f"수동 반영(미션 {m.get('mission_id')} 기록: {ap.get('by') or '?'}, {ap.get('at') or '?'}) {ap.get('note') or ''}".strip()
+                self._set_state(rid, RESULT_APPLIED, note, extra={"manual": True, "mission_id": m.get("mission_id")})
+                run = self.sm.get_run(rid) or {}
+                if not (run.get("worktree_path") and Path(run["worktree_path"]).exists()):
+                    self.sm.upsert_result_state(rid, worktree_state="MISSING")
+                try:
+                    self.sm.log_audit(rid, str(ap.get("by") or "manual"), "RESULT_APPLIED_MANUAL",
+                                      json.dumps({"mission_id": m.get("mission_id"), "applied_run": ap.get("run_id")}, ensure_ascii=False))
+                except Exception:
+                    pass
+                pending.discard(rid)
+                done.append(rid)
+        return done
+
     def pending_results(self) -> List[Dict[str, Any]]:
         """READY results from the persisted result_state table only (no run scan, no git)."""
+        try:
+            self.sync_manual_applies()
+        except Exception:
+            pass
         out = []
         for r in self.sm.list_pending_results():
             if str(r.get("run_id", "")).startswith("RUN-TEST-"):

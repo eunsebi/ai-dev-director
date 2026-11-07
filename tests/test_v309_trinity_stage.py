@@ -56,7 +56,8 @@ def test_stage_only_calls_known_read_endpoints_and_the_chat_post():
     js = (CONSOLE / "stage.js").read_text(encoding="utf-8")
     called = set(re.findall(r"(?:getJSON|fetch)\('(/[a-z/_]+)", js))
     assert called == {"/ops/activity", "/status", "/ops/replay", "/chat/messages", "/chat", "/ops/roles", "/ops/mission/decide",
-                      "/ops/projects", "/project"}                     # project menu: registry read + the same /project select the classic page uses
+                      "/ops/projects", "/project",                     # project menu: registry read + the same /project select the classic page uses
+                      "/ops/limits"}                                   # fork 2026-11-07: subscription windows (read-only)
     assert js.count("method:'POST'") == 4                             # writes: chat to HEAD, a role change, a delivery decision, a project selection
     assert "'X-Solomon-Bridge':roleToken" in js                        # the role change carries the local token
 

@@ -139,3 +139,22 @@ Known unrelated on this Mac: `test_v020_provider_ops.py` needs `requests` (colle
   - `core/alerts.py`가 Mac 배너와 같은 조건(같은 원인은 10분에 한 번)으로 Discord 채널 웹후크에도 메시지를 보낸다. 별도 스레드에서 보내며, 시간 제한은 10초다.
   - 웹후크 주소는 비밀 정보다. 그래서 `config.yaml`의 `alerts.discord_webhook`이나 `DIRECTOR_DISCORD_WEBHOOK` 환경 변수에서만 읽는다. `https://discord.com/api/webhooks/<id>/<token>` 형식만 받는다.
   - 메시지는 멘션을 끈 채로 보낸다(`allowed_mentions` 비움).
+
+## 스테이지 역할 표시 수정, 구독 남은 한도 표시, 수동 반영 상태 동기화 (2026-11-07)
+- **역할 표시 버그**
+  - 문제: 작업이 진행 중이면 우측 역할 칸이 `/status`의 `providers.role`을 읽는다. 겸임이면 이 값이 `"HEAD, BUILDER"`처럼 와서 알아보지 못했고, BUILDER가 기본값(Antigravity)으로 표시됐다.
+  - 수정: `console/stage.js` `assignment()`가 이 값을 쉼표나 「·」로 나눠 읽는다.
+- **구독 남은 한도**: 「AI별 작업량」 패널에 접을 수 있는 섹션을 추가했다. 엔드포인트는 `GET /ops/limits`(`companion_server.py`), 코드는 `core/subscription_limits.py`.
+  - Claude: `claude --print --output-format stream-json --verbose`가 내보내는 `rate_limit_event`를 쓴다. 5시간·주간 사용률과 초기화 시각이 들어 있고, VS Code 확장도 같은 정보를 쓴다. Haiku로 짧은 확인 호출을 한다. 대시보드를 열어 둔 동안에만, 기본 10분마다, 백그라운드로 실행하며 작업 장부에는 기록하지 않는다.
+  - Codex: `~/.codex/sessions/**/rollout-*.jsonl`의 `payload.rate_limits`를 읽는다. 추가 호출은 없다.
+  - Antigravity: `agy -p /usage --output-format json`을 쓴다. 로컬 명령이라 토큰을 쓰지 않는다. 모델 그룹별 주간 한도(남은 비율, 초기화 시각)를 받는다. 실패하면 장부에 남은 마지막 사용 한도 초과 기록을 보여 준다.
+  - 결과는 `data/subscription_limits.json`에 저장한다. 확인 간격은 `config.yaml`의 `subscription_limits.claude_probe_minutes` / `antigravity_probe_minutes`로 정한다(기본 10, 0이면 끔).
+  - 화면
+    - 제목을 누르면 접고 펼친다. 상태는 localStorage에 기억한다.
+    - 접으면 AI별 최대 사용률을 한 줄로 요약한다. 폭이 좁으면 이름 대신 색 점을 쓴다.
+    - 툴팁은 CSS `data-tip`으로 그린다. 일부 Chromium 계열 브라우저는 button 안의 title을 보여 주지 않는다.
+  - 예전 서버에는 `/ops/limits`가 없어 404가 오는데, 그때는 섹션을 숨긴다.
+- **수동 반영 → 결과 상태**
+  - 문제: Claude Code가 `git apply`로 반영하고 미션 JSON에 `applied`를 적으면 `result_state`가 READY로 남는다. 그래서 「작업실」 배지와 "적용 대기 N건"이 계속 떠 있었다.
+  - 수정: `ResultManager.sync_manual_applies()`(`pending_results()`가 호출)가 처리한다. `applied.status == "applied"`인 미션에서 반영된 run까지의 PASS 단계를 APPLIED로 바꾸고, 감사 기록 `RESULT_APPLIED_MANUAL`을 남긴다. 작업본이 없으면 `worktree_state`를 MISSING으로 둔다.
+- **테스트**: `tests/test_fork_subscription_limits.py`. `test_v309` 엔드포인트 목록에 `/ops/limits`를 추가했다.

@@ -46,10 +46,55 @@ async function getJSON(url){const r=await fetch(url,{cache:'no-store'});if(!r.ok
 const CLI={claude:'ANTHROPIC',antigravity:'GOOGLE',openai:'OPENAI'},CLI_OF={ANTHROPIC:'claude',GOOGLE:'antigravity',OPENAI:'openai'};
 let roleSettings=null,roleToken=null;                 // what the NEXT task will use (data/role_settings.json via /ops/roles)
 async function pollRoles(){try{const r=await getJSON('/ops/roles');roleSettings=r.roles;roleToken=r.csrf;repaint();}catch(e){/* keep the last known roles */}}
+// fork 2026-11-07: subscription windows per AI (Claude 5h/weekly via a tiny probe, Codex from its session log).
+// An older server without /ops/limits answers 404: the section simply stays hidden until the server is restarted.
+let limits=null;
+async function pollLimits(){try{limits=await getJSON('/ops/limits');if(limits.error)throw Error(limits.error);paintLimits();}catch(e){if(!limits||limits.error)$('limits').hidden=true;}}
+function leftText(sec){if(sec<=0)return '곧 초기화';const d=Math.floor(sec/86400),h=Math.floor(sec%86400/3600),m=Math.floor(sec%3600/60);
+  return d?d+'일 '+h+'시간':h?h+'시간 '+m+'분':m+'분';}
+function clockText(ts){const t=new Date(ts*1000),p=n=>String(n).padStart(2,'0'),hm=p(t.getHours())+':'+p(t.getMinutes());
+  return (ts*1000-Date.now()<86400000?'':(t.getMonth()+1)+'/'+t.getDate()+' ')+hm;}
+function paintLimits(){
+  const box=$('limit-rows'),prov=(limits&&limits.providers)||{};box.replaceChildren();
+  for(const p of ['ANTHROPIC','OPENAI','GOOGLE']){const info=prov[p]||{},card=el('div','','limit-ai');card.style.setProperty('--c',AI[p].css);
+    card.append(el('b',AI[p].name));
+    if(info.checked_at)card.append(el('small',clockText(info.checked_at)+' 확인'+(info.probing?' · 갱신 중':'')));
+    for(const w of info.windows||[]){const row=el('div','','limit-w'),pct=typeof w.used_percent==='number'?w.used_percent:null,
+        left=w.resets_at?w.resets_at-Date.now()/1000:null;
+      row.classList.toggle('hot',(pct!=null&&pct>=80)||w.status==='rejected');
+      const bar=el('span','','bar'),fill=el('i');fill.style.width=(pct==null?0:Math.min(100,pct))+'%';bar.append(fill);
+      row.title=w.label+' 한도'+(pct!=null?' '+pct+'% 사용':'')+(w.resets_at?' · '+new Date(w.resets_at*1000).toLocaleString('ko-KR')+' 초기화':'');
+      row.append(el('span',w.label),bar,el('em',(pct!=null?Math.round(pct)+'% 사용':'—')+(left!=null?' · '+leftText(left)+' 후 초기화':'')));card.append(row);}
+    let note='';
+    if(p==='GOOGLE'&&!(info.windows||[]).length&&info.limit_hit_at)note='한도 초과 기록 · '+new Date(info.limit_hit_at).toLocaleString('ko-KR')+(info.limit_detail?' · '+info.limit_detail:'');
+    else if(info.disabled&&!(info.windows||[]).length)note='확인 꺼짐 (config.yaml subscription_limits.'+(p==='GOOGLE'?'antigravity':'claude')+'_probe_minutes)';
+    else if(info.error)note=((info.windows||[]).length?'최근 확인 실패, 이전 값 표시 · ':'')+info.error;
+    else if(!(info.windows||[]).length)note=info.probing?'확인 중…':'정보 없음';
+    if(note)card.append(el('div',note,'limit-note'));box.append(card);}
+  // folded header: the most-used window per AI, e.g. "Claude 43% · Codex 7% · Antigravity 51%"
+  // short names + AI colour so all three fit in the narrow panel; full names in the tooltip
+  const SHORT_AI={ANTHROPIC:'Claude',OPENAI:'Codex',GOOGLE:'AGY'},sum=$('limits-summary'),full=[];sum.replaceChildren();
+  for(const p of ['ANTHROPIC','OPENAI','GOOGLE']){const ws=((prov[p]||{}).windows||[]).filter(w=>typeof w.used_percent==='number');if(!ws.length)continue;
+    const pct=Math.round(Math.max(...ws.map(w=>w.used_percent))),s=el('span','','ls');s.style.color=AI[p].css;
+    s.append(el('b',SHORT_AI[p]+' ','nm'),el('b','● ','dot'),pct+'%');
+    if(sum.childNodes.length)sum.append(el('span',' · ','sep'));sum.append(s);full.push(AI[p].name+' '+pct+'% 사용');}
+  // own tooltip (data-tip + CSS): some Chromium-based browsers never show a native title inside a button
+  $('limits-toggle').dataset.tip=full.join(' · ');
+  $('limits').hidden=false;fitLimitsSummary();}
+// fork 2026-11-07: fold/unfold the limits section; remembered per browser (falls back to open)
+// names -> coloured dots when the narrow panel would cut the summary off (re-checked on resize)
+function fitLimitsSummary(){const s=$('limits-summary');if(!s)return;s.classList.remove('compact');if(s.scrollWidth>s.clientWidth+1)s.classList.add('compact');}
+function setLimitsFolded(f){$('limits').classList.toggle('folded',f);$('limits-toggle').setAttribute('aria-expanded',String(!f));
+  try{localStorage.setItem('stage.limitsFolded',f?'1':'0');}catch(e){}}
+function initLimitsFold(){let f=false;try{f=localStorage.getItem('stage.limitsFolded')==='1';}catch(e){}
+  setLimitsFolded(f);$('limits-toggle').addEventListener('click',()=>{setLimitsFolded(!$('limits').classList.contains('folded'));fitLimitsSummary();});
+  window.addEventListener('resize',fitLimitsSummary);}
 function assignment(){
   if(roleSettings&&!isLiveNow())return {HEAD:CLI[roleSettings.head],BUILDER:CLI[roleSettings.builder],REVIEWER:CLI[roleSettings.reviewer]};
   const a={...DEFAULT_ASSIGN},prov=(status&&status.providers)||{};
-  for(const [p,info] of Object.entries(prov))if(info&&ROLES.includes(info.role)&&AI[p])a[info.role]=p;
+  // fork 2026-11-07: one AI may hold several roles, so /status sends e.g. "HEAD, BUILDER"
+  for(const [p,info] of Object.entries(prov)){if(!info||!AI[p])continue;
+    for(const r of String(info.role||'').replace(/·/g,',').split(',').map(x=>x.trim().toUpperCase()))if(ROLES.includes(r))a[r]=p;}
   return a;
 }
 function isLiveNow(){const a=activity||{};return (a.working_now||[]).length>0||(a.missions||[]).some(m=>m.live);}
@@ -493,6 +538,7 @@ function start(){
     if(e.key==='r'||e.key==='R'||e.key==='ㄱ')startReplay();});
   setInterval(()=>{const d=new Date();$('top-clock').textContent=[d.getHours(),d.getMinutes(),d.getSeconds()].map(n=>String(n).padStart(2,'0')).join(':');if(!replay)tickTimer();},1000);
   pollActivity();pollStatus();pollChat();pollRoles();setInterval(pollRoles,8000);
+  initLimitsFold();pollLimits();setInterval(pollLimits,60000);setInterval(()=>{if(limits&&!limits.error)paintLimits();},30000);
   setInterval(pollActivity,3000);setInterval(pollStatus,6000);setInterval(pollChat,3000);
 }
 window.TrinityStage={model:()=>lastModel,replaying:()=>!!replay};
