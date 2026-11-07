@@ -55,10 +55,10 @@ async function setupRoles(){
  let roles,csrf,saving=false;
  const notice=el('p','역할 불러오는 중…','role-notice');notice.setAttribute('aria-live','polite');doc.getElementById('corestrip').after(notice);
  const buttons={};
- function paint(){for(const [domain,provider] of Object.entries(domains)){const role=order.find(r=>roles[r]===provider);buttons[domain].textContent='다음: '+names[role]+' ↻';buttons[domain].disabled=saving;buttons[domain].setAttribute('aria-label',domain+' 역할 변경. 현재 예약 '+names[role]);}}
+ function paint(){for(const [domain,provider] of Object.entries(domains)){const held=order.filter(r=>roles[r]===provider),label=held.length?held.map(r=>names[r]).join('·'):'역할 없음';buttons[domain].textContent='다음: '+label+(held.length===1?' ↻':'');buttons[domain].disabled=saving||held.length!==1;buttons[domain].title=held.length===1?'':'한 AI가 여러 역할을 맡거나 역할이 없을 때는 작업실 화면의 역할 이름을 눌러 바꾸세요';buttons[domain].setAttribute('aria-label',domain+' 역할 변경. 현재 예약 '+label);}}
  for(const [domain,provider] of Object.entries(domains)){
   const button=el('button','역할 연결 중…','role-cycle');button.type='button';button.disabled=true;buttons[domain]=button;doc.getElementById('node-'+domain)?.append(button);
-  button.onclick=async()=>{if(saving||!roles)return;saving=true;paint();const next={...roles},current=order.find(r=>roles[r]===provider),target=order[(order.indexOf(current)+1)%3];next[current]=roles[target];next[target]=provider;
+  button.onclick=async()=>{if(saving||!roles||order.filter(r=>roles[r]===provider).length!==1)return;saving=true;paint();const next={...roles},current=order.find(r=>roles[r]===provider),target=order[(order.indexOf(current)+1)%3];next[current]=roles[target];next[target]=provider;
    try{const response=await fetch('/ops/roles',{method:'POST',headers:{'Content-Type':'application/json','X-Solomon-Bridge':csrf},body:JSON.stringify(next)});const result=await response.json();if(!response.ok)throw Error(result.error||'저장 실패');roles=result.roles;notice.textContent=result.message;}
    catch(error){notice.textContent='역할 변경 실패 · '+error.message;}finally{saving=false;paint();}};
  }

@@ -13,8 +13,9 @@ DOMAINS = {'openai': 'OPENAI', 'claude': 'ANTHROPIC', 'antigravity': 'GOOGLE'}
 def validate(roles):
     if not isinstance(roles, dict) or set(roles) != {'head', 'builder', 'reviewer'}:
         raise ValueError('HEAD, BUILDER, REVIEWER 세 역할을 모두 지정해야 합니다.')
-    if any(v not in DOMAINS for v in roles.values()) or len(set(roles.values())) != 3:
-        raise ValueError('세 역할에는 서로 다른 AI를 지정해야 합니다.')
+    # Fork 2026-11-07: one AI may hold several roles (1, 2 or 3 distinct AIs, the user's choice).
+    if any(v not in DOMAINS for v in roles.values()):
+        raise ValueError('역할마다 Claude, Codex, Antigravity 중 하나를 지정해야 합니다.')
     return dict(roles)
 
 def apply(config):

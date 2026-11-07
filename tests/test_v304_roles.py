@@ -26,7 +26,7 @@ def test_all_six_role_assignments(tmp_path, monkeypatch, providers):
             assert row[0] == role.upper()
 
 @pytest.mark.parametrize('roles', [{}, {'head':'bad','builder':'claude','reviewer':'openai'},
-    {'head':'openai','builder':'openai','reviewer':'claude'}])
+    {'head':'openai','builder':'openai'}])
 def test_invalid_roles_do_not_replace_saved_file(tmp_path,monkeypatch,roles):
     monkeypatch.setattr(settings,'PATH',tmp_path/'roles.json')
     valid={'head':'claude','builder':'antigravity','reviewer':'openai'}

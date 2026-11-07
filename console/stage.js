@@ -60,11 +60,12 @@ function openRoleMenu(label){
   menu.dataset.slot=String(slot);menu.replaceChildren(el('p',ROLE_KO[role]+' 를 맡을 AI'+(isLiveNow()?' · 진행 중인 작업은 그대로, 다음 작업부터 적용':'')));
   const key=role.toLowerCase();
   for(const p of ['ANTHROPIC','GOOGLE','OPENAI']){
-    const b=el('button',AI[p].name),cur=roleSettings[key]===CLI_OF[p],other=ROLES.find(r=>roleSettings[r.toLowerCase()]===CLI_OF[p]);
+    // fork 2026-11-07: only this role changes; one AI may hold several roles (no forced swap)
+    const b=el('button',AI[p].name),cur=roleSettings[key]===CLI_OF[p],others=ROLES.filter(r=>r!==role&&roleSettings[r.toLowerCase()]===CLI_OF[p]);
     b.type='button';b.setAttribute('role','menuitem');b.style.setProperty('--c',AI[p].css);b.classList.toggle('on',cur);
-    b.append(el('small',cur?'현재':'지금 '+other+' → 서로 교체'));
+    b.append(el('small',cur?'현재':others.length?others.join('·')+'와 함께 맡음':'이 역할만 바뀜'));
     b.onclick=async()=>{if(cur){menu.hidden=true;return;}
-      const next={...roleSettings};next[other.toLowerCase()]=roleSettings[key];next[key]=CLI_OF[p];
+      const next={...roleSettings};next[key]=CLI_OF[p];
       for(const x of menu.querySelectorAll('button'))x.disabled=true;
       try{const res=await fetch('/ops/roles',{method:'POST',headers:{'Content-Type':'application/json','X-Solomon-Bridge':roleToken},body:JSON.stringify(next)}),out=await res.json();
         if(!res.ok)throw Error(out.error||'저장 실패');roleSettings=out.roles;notice('역할을 바꿨습니다 · '+ROLE_KO[role]+' = '+AI[p].name+' (다음 작업부터 적용)');}
