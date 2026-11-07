@@ -1,11 +1,16 @@
 """Failure alerts outside the browser (fork 2026-11-07).
 
-macOS: a Notification Center banner through `osascript` (no extra install), so a failure reaches the user even when
-the dashboard tab is closed. Throttled per (source, reason) so a retry loop does not flood the screen. Never raises,
-never blocks the caller. Off under unit tests (DIRECTOR_TESTING=1) and with DIRECTOR_MAC_ALERTS=0.
+- macOS: a Notification Center banner through `osascript` (no extra install), so a failure reaches the user even
+  when the dashboard tab is closed. Off with DIRECTOR_MAC_ALERTS=0.
+- Discord: a message to a channel webhook, so it reaches the phone. The webhook URL is a secret: it is read from
+  config.yaml `alerts.discord_webhook` (never committed) or the DIRECTOR_DISCORD_WEBHOOK environment variable.
+  Only https://discord.com/api/webhooks/... (or discordapp.com) URLs are used.
+Throttled per (source, reason) so a retry loop does not flood. Never raises, never blocks the caller. Everything is
+off under unit tests (DIRECTOR_TESTING=1).
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -18,9 +23,40 @@ SKIP_CODES = {"INTERRUPTED"}          # the user stopped it; no news
 _LOCK = threading.Lock()
 
 
+CONFIG = Path(__file__).resolve().parent.parent / "config.yaml"
+_WEBHOOK = re.compile(r"^https://(?:discord|discordapp)\.com/api/webhooks/\d+/[\w-]+$")
+
+
+def _testing() -> bool:
+    return os.environ.get("DIRECTOR_TESTING") == "1"
+
+
 def enabled() -> bool:
-    return (sys.platform == "darwin" and os.environ.get("DIRECTOR_TESTING") != "1"
-            and os.environ.get("DIRECTOR_MAC_ALERTS", "1") != "0")
+    return sys.platform == "darwin" and not _testing() and os.environ.get("DIRECTOR_MAC_ALERTS", "1") != "0"
+
+
+def discord_webhook() -> str:
+    url = os.environ.get("DIRECTOR_DISCORD_WEBHOOK", "").strip()
+    if not url:
+        try:
+            import yaml
+            with open(CONFIG, encoding="utf-8") as f:
+                url = str(((yaml.safe_load(f) or {}).get("alerts") or {}).get("discord_webhook") or "").strip()
+        except Exception:
+            url = ""
+    return url if _WEBHOOK.match(url) else ""
+
+
+def _post_discord(url: str, title: str, message: str) -> None:
+    import urllib.request
+    body = json.dumps({"username": "AI DEV DIRECTOR", "content": f"**{title}**\n{message}"[:1900],
+                       "allowed_mentions": {"parse": []}}).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"Content-Type": "application/json", "User-Agent": "ai-dev-director-alerts"})
+    try:
+        urllib.request.urlopen(req, timeout=10).close()
+    except Exception:
+        pass
 
 
 def _quote(text: str) -> str:
@@ -47,14 +83,23 @@ def _due(key: str) -> bool:
 
 
 def notify(title: str, message: str, key: str) -> bool:
-    if not enabled() or not _due(key):
+    if _testing():
         return False
-    script = f"display notification {_quote(message)} with title {_quote(title)} sound name \"Basso\""
-    try:
-        subprocess.Popen(["osascript", "-e", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True
-    except OSError:
+    mac, hook = enabled(), discord_webhook()
+    if not (mac or hook) or not _due(key):
         return False
+    sent = False
+    if mac:
+        script = f"display notification {_quote(message)} with title {_quote(title)} sound name \"Basso\""
+        try:
+            subprocess.Popen(["osascript", "-e", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            sent = True
+        except OSError:
+            pass
+    if hook:
+        threading.Thread(target=_post_discord, args=(hook, title, message), daemon=True).start()
+        sent = True
+    return sent
 
 
 def call_failed(provider_name: str, role: str, why: dict) -> None:

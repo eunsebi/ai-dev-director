@@ -92,7 +92,9 @@ def test_builder_step_label_names_the_inner_cause():
 
 
 def test_alerts_are_off_under_tests_and_throttled(tmp_path, monkeypatch):
-    assert not alerts.enabled()
+    assert not alerts.enabled() and not alerts.notify("t", "m", "k")
+    monkeypatch.setattr(alerts, "_testing", lambda: False)
+    monkeypatch.setattr(alerts, "discord_webhook", lambda: "")
     monkeypatch.setattr(alerts, "STATE", tmp_path / "a.json")
     monkeypatch.setattr(alerts, "enabled", lambda: True)
     calls = []
@@ -108,3 +110,29 @@ def test_activity_payload_carries_failures():
     usage.call_finished(rid, ["codex"], "p", result(stderr="Not logged in", exit_code=1))
     p = dashboard_server.build_activity_payload()
     assert p["failures"]["items"][0]["reason_code"] == "AUTH" and "steps" in p["failures"]
+
+
+def test_discord_webhook_only_from_config_and_only_discord_urls(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.yaml"
+    monkeypatch.setattr(alerts, "CONFIG", cfg)
+    monkeypatch.delenv("DIRECTOR_DISCORD_WEBHOOK", raising=False)
+    assert alerts.discord_webhook() == ""
+    cfg.write_text("alerts:\n  discord_webhook: https://discord.com/api/webhooks/123/abc-DEF_9\n")
+    assert alerts.discord_webhook() == "https://discord.com/api/webhooks/123/abc-DEF_9"
+    cfg.write_text("alerts:\n  discord_webhook: https://evil.example.com/api/webhooks/123/abc\n")
+    assert alerts.discord_webhook() == ""
+
+
+def test_discord_message_is_sent_once_per_throttle(tmp_path, monkeypatch):
+    posts = []
+    monkeypatch.setattr(alerts, "_testing", lambda: False)
+    monkeypatch.setattr(alerts, "enabled", lambda: False)
+    monkeypatch.setattr(alerts, "STATE", tmp_path / "a.json")
+    monkeypatch.setattr(alerts, "discord_webhook", lambda: "https://discord.com/api/webhooks/1/x")
+    monkeypatch.setattr(alerts, "_post_discord", lambda url, title, message: posts.append((title, message)))
+    class Now:
+        def __init__(self, target, args, daemon): self.t, self.a = target, args
+        def start(self): self.t(*self.a)
+    monkeypatch.setattr(alerts.threading, "Thread", Now)
+    assert alerts.notify("제목", "내용", "k") and not alerts.notify("제목", "내용", "k")
+    assert posts == [("제목", "내용")]

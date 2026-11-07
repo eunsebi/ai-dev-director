@@ -135,3 +135,7 @@ Known unrelated on this Mac: `test_v020_provider_ops.py` needs `requests` (colle
     - 「최근 AI 호출」 옆에 「실패 원인 N」 버튼을 두었다. 원인별 요약, 단계 실패, 호출 실패 목록을 보여 준다.
     - 새 실패가 생기면 화면 위에 알림이 뜬다(「원인 보기」). 「브라우저 알림 켜기」를 누르면 탭이 뒤에 있을 때도 알림이 온다.
 - **테스트**: `tests/test_fork_failure_reasons.py`. 덤으로 `test_v307` 중 `test_claude_reported_tokens_are_exact`가 이제 맥에서도 통과한다(Windows 경로 처리 때문).
+- **추가(같은 날): Discord 알림**
+  - `core/alerts.py`가 Mac 배너와 같은 조건(같은 원인은 10분에 한 번)으로 Discord 채널 웹후크에도 메시지를 보낸다. 별도 스레드에서 보내며, 시간 제한은 10초다.
+  - 웹후크 주소는 비밀 정보다. 그래서 `config.yaml`의 `alerts.discord_webhook`이나 `DIRECTOR_DISCORD_WEBHOOK` 환경 변수에서만 읽는다. `https://discord.com/api/webhooks/<id>/<token>` 형식만 받는다.
+  - 메시지는 멘션을 끈 채로 보낸다(`allowed_mentions` 비움).
