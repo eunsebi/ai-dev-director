@@ -8,6 +8,11 @@ from core.git_manager import GitManager
 from core.process_runner import ProcessTreeRunner, ProcessResult
 from core.env_utils import get_sanitized_env
 
+# Shown for a step the project leaves unconfigured on purpose (e.g. tests that only compile in build-for-testing).
+SKIPPED_STEP_NOTE = ("Not configured for this project (skipped on purpose, not a failure). "
+                     "If verification failed, the cause is in the build output above: fix those compiler errors.")
+
+
 class Verifier:
     """Orchestrator-driven verification executing build, test, and git checks."""
 
@@ -29,7 +34,9 @@ class Verifier:
     @staticmethod
     def _execute_cmd(cmd_str: Optional[Union[str, List[str]]], cwd: Path, timeout: float = 120.0) -> Dict[str, Any]:
         if not cmd_str:
-            return {"command": None, "executed": False, "passed": True, "output": "No command specified"}
+            # Fork (2026-11-07): the old "No command specified" made HEAD/BUILDER/REVIEWER read an intentionally
+            # skipped step as a broken verification setup and ignore the real compiler errors in build.output.
+            return {"command": None, "executed": False, "passed": True, "output": SKIPPED_STEP_NOTE}
         
         try:
             env = get_sanitized_env()
