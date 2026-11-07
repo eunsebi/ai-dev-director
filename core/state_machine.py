@@ -238,6 +238,12 @@ class StateMachine:
             else:
                 conn.execute("UPDATE human_action_state SET resolved=1, actionable=0, updated_at=? WHERE run_id=?", (now, run_id))
             conn.commit()
+        if new_state in (State.FAIL, State.HUMAN_REQUIRED, State.TIMEOUT):   # fork 2026-11-07: Mac banner
+            try:
+                from core import alerts
+                alerts.step_failed(run_id, str(getattr(new_state, "value", new_state)), details or "")
+            except Exception:
+                pass
 
     def reopen_after_human_approval(self, run_id: str, details: str, target: str = None) -> bool:
         """The ONLY way out of HUMAN_REQUIRED: an explicit human approval reopens the run at ORDER_READY so it

@@ -762,6 +762,10 @@ def build_activity_payload(limit_missions: int = 5) -> dict:
             usage.backfill_from_runs(DIRECTOR_ROOT / "runs", missions)
         except Exception:
             pass
+        try:
+            usage.backfill_failure_reasons(DIRECTOR_ROOT / "runs")
+        except Exception:
+            pass
         _USAGE_BACKFILLED["done"] = True
     sm = StateMachine()
     views = [mission_view(m, sm) for m in missions[:limit_missions]]
@@ -774,12 +778,23 @@ def build_activity_payload(limit_missions: int = 5) -> dict:
         events = [dict(e) for e in conn.execute(
             "SELECT t.timestamp AS at, t.run_id, t.to_state, substr(t.details, 1, 200) AS details, r.project_path "
             "FROM state_transitions t JOIN runs r ON r.run_id = t.run_id ORDER BY t.id DESC LIMIT 25").fetchall()]
-    for e in events:
+        # fork 2026-11-07: run steps that ended badly, with the reason the Director recorded (실패 원인 panel)
+        step_failures = [dict(e) for e in conn.execute(
+            "SELECT t.timestamp AS at, t.run_id, t.to_state, substr(t.details, 1, 600) AS details, r.project_path "
+            "FROM state_transitions t JOIN runs r ON r.run_id = t.run_id "
+            "WHERE t.to_state IN ('FAIL','HUMAN_REQUIRED','TIMEOUT') AND t.timestamp >= ? ORDER BY t.id DESC LIMIT 30",
+            ((datetime.utcnow() - timedelta(hours=72)).isoformat(),)).fetchall()]
+    for e in events + step_failures:
         e["project"] = Path(e.pop("project_path") or "").name
         e["state_ko"] = STAGE_KO.get(e["to_state"], e["to_state"])
-    return {"server_time": datetime.utcnow().isoformat(), "missions": views,
+    from core.failure_reason import classify_step
+    for e in step_failures:
+        e.update({"reason_" + k: v for k, v in classify_step(e["to_state"], e.get("details") or "").items()})
+    failures = usage.recent_failures(40)
+    failures["steps"] = step_failures
+    return {"server_time": datetime.utcnow().isoformat(), "missions": views, "failures": failures,
             "focus_mission_id": focus["mission_id"] if focus else None, "working_now": running,
-            "usage": usage.summary(focus["mission_id"] if focus else None), "recent_calls": usage.recent_calls(15),
+            "usage": usage.summary(focus["mission_id"] if focus else None), "recent_calls": usage.recent_calls(30),
             "events": events, "names": {"provider": usage.PROVIDER_NAME, "role": usage.ROLE_NAME}}
 
 

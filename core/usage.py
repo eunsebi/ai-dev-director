@@ -34,8 +34,16 @@ def context() -> Dict[str, Any]:
 
 
 def provider_of(argv0: str) -> Optional[str]:
-    base = os.path.basename(str(argv0 or "")).lower()
-    return PROVIDER_BY_CLI.get(base.split(".")[0])
+    base = re.split(r"[\\/]", str(argv0 or ""))[-1].lower()       # Windows paths too, on any OS
+    hit = PROVIDER_BY_CLI.get(base.split(".")[0])
+    if hit:
+        return hit
+    # Fork 2026-11-07: the Claude installer resolves to ~/.local/share/claude/versions/<x.y.z> (basename "2.1.319"),
+    # so every Claude call was missing from the ledger. Look at the enclosing folders too.
+    parts = [x.lower() for x in str(argv0 or "").replace("\\", "/").split("/")]
+    if len(parts) >= 3 and parts[-2] == "versions":
+        return PROVIDER_BY_CLI.get(parts[-3])
+    return None
 
 
 def estimate_tokens(text: Optional[str]) -> int:
@@ -83,6 +91,10 @@ def _conn() -> sqlite3.Connection:
         duration_sec REAL, prompt_chars INTEGER, output_chars INTEGER,
         tokens_in INTEGER, tokens_out INTEGER, tokens_total INTEGER, tokens_exact INTEGER DEFAULT 0,
         exit_code INTEGER, source TEXT DEFAULT 'live')""")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(ai_usage)")}
+    for col in ("error_code", "error_label", "error_detail"):      # fork 2026-11-07: why a call failed
+        if col not in cols:
+            conn.execute(f"ALTER TABLE ai_usage ADD COLUMN {col} TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS ai_usage_started ON ai_usage(started_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS ai_usage_mission ON ai_usage(mission_id)")
     return conn
@@ -134,19 +146,30 @@ def call_finished(row_id: Optional[int], argv: List[str], prompt: Optional[str],
         tin, tout, total, is_exact = est_in, est_out, est_in + est_out, 0
     exit_code = getattr(result, "exit_code", None)
     status = "TIMEOUT" if getattr(result, "timed_out", False) else ("OK" if exit_code == 0 else "ERROR")
+    why = {"code": None, "label": None, "detail": None}
+    if status != "OK":
+        from core.failure_reason import classify
+        why = classify(exit_code=exit_code, timed_out=getattr(result, "timed_out", False),
+                       timeout_reason=getattr(result, "timeout_reason", None), stdout=stdout, stderr=stderr)
     with _conn() as conn:
         conn.execute(
             "UPDATE ai_usage SET ended_at=?, status=?, duration_sec=?, output_chars=?, tokens_in=?, tokens_out=?, "
-            "tokens_total=?, tokens_exact=?, exit_code=? WHERE id=?",
+            "tokens_total=?, tokens_exact=?, exit_code=?, error_code=?, error_label=?, error_detail=? WHERE id=?",
             (datetime.utcnow().isoformat(), status, getattr(result, "duration_sec", None), len(stdout),
-             tin, tout, total, is_exact, exit_code, row_id))
+             tin, tout, total, is_exact, exit_code, why["code"], why["label"], why["detail"], row_id))
+    if status != "OK":
+        from core import alerts
+        alerts.call_failed(PROVIDER_NAME.get(provider, provider or "AI"), context().get("role") or "", why)
 
 
 def call_failed(row_id: Optional[int], error: BaseException) -> None:
     if row_id is None:
         return
     with _conn() as conn:
-        conn.execute("UPDATE ai_usage SET ended_at=?, status='ERROR' WHERE id=?", (datetime.utcnow().isoformat(), row_id))
+        from core.failure_reason import classify
+        why = classify(error=f"{type(error).__name__}: {error}")
+        conn.execute("UPDATE ai_usage SET ended_at=?, status='ERROR', error_code=?, error_label=?, error_detail=? WHERE id=?",
+                     (datetime.utcnow().isoformat(), why["code"], why["label"], why["detail"], row_id))
 
 
 # ------------------------------------------------------------------ backfill of calls made before the ledger existed
@@ -247,7 +270,89 @@ def recent_calls(limit: int = 20) -> List[Dict[str, Any]]:
              "provider_name": PROVIDER_NAME.get(r["provider"], r["provider"]), "role": r["role"], "stage": r["stage"],
              "status": r["status"], "seconds": r["duration_sec"], "tokens": r["tokens_total"],
              "exact": bool(r["tokens_exact"]), "run_id": r["run_id"], "mission_id": r["mission_id"],
-             "source": r["source"]} for r in rows]
+             "source": r["source"], **_reason(r)} for r in rows]
+
+
+def _reason(r) -> Dict[str, Any]:
+    """reason/reason_code/reason_detail/reason_hint for a finished ledger row (empty for OK calls)."""
+    if r["status"] == "OK":
+        return {}
+    from core.failure_reason import describe
+    keys = r.keys()
+    code = r["error_code"] if "error_code" in keys else None
+    if not code:
+        code = {"INTERRUPTED": "INTERRUPTED", "TIMEOUT": "TIMEOUT"}.get(r["status"], "UNKNOWN")
+    base = describe(code)
+    label = (r["error_label"] if "error_label" in keys else None) or base["label"]
+    detail = (r["error_detail"] if "error_detail" in keys else None) or ""
+    return {"reason_code": code, "reason": label, "reason_detail": detail, "reason_hint": base["hint"]}
+
+
+def recent_failures(limit: int = 40, since_hours: int = 72) -> Dict[str, Any]:
+    """Failed AI calls of the last ``since_hours`` (newest first) plus counts per reason - the dashboard's
+    「실패 원인」 panel."""
+    cutoff = (datetime.utcnow() - timedelta(hours=since_hours)).isoformat()
+    with _conn() as conn:
+        rows = conn.execute("SELECT * FROM ai_usage WHERE status NOT IN ('OK','RUNNING') AND started_at >= ? "
+                            "ORDER BY id DESC", (cutoff,)).fetchall()
+    items, counts = [], {}
+    for r in rows:
+        why = _reason(r)
+        c = counts.setdefault(why["reason_code"], {"code": why["reason_code"], "label": why["reason"].split(" · ")[0],
+                                                     "hint": why["reason_hint"], "count": 0, "last_at": None})
+        c["count"] += 1
+        c["last_at"] = c["last_at"] or (r["ended_at"] or r["started_at"])
+        if len(items) < limit:
+            items.append({"id": r["id"], "at": r["ended_at"] or r["started_at"], "provider": r["provider"],
+                          "provider_name": PROVIDER_NAME.get(r["provider"], r["provider"]), "role": r["role"],
+                          "stage": r["stage"], "status": r["status"], "seconds": r["duration_sec"],
+                          "exit_code": r["exit_code"], "run_id": r["run_id"], "mission_id": r["mission_id"], **why})
+    return {"since_hours": since_hours, "total": len(rows), "items": items,
+            "by_reason": sorted(counts.values(), key=lambda c: -c["count"])}
+
+
+def backfill_failure_reasons(runs_dir: Path) -> int:
+    """Calls recorded before reasons were kept: take the error text the run saved in *_cli_attempts.json and
+    attach it to that run's failed ledger rows of the same provider, in order. Idempotent."""
+    import json as _json
+    from core.failure_reason import classify
+    updated = 0
+    with _conn() as conn:
+        rows = conn.execute("SELECT id, run_id, provider, status, exit_code, duration_sec FROM ai_usage "
+                            "WHERE status IN ('ERROR','TIMEOUT') AND error_code IS NULL AND run_id IS NOT NULL ORDER BY id").fetchall()
+        by_run: Dict[str, list] = {}
+        for r in rows:
+            by_run.setdefault(r["run_id"], []).append(r)
+        for run_id, pending in by_run.items():
+            attempts = []
+            for name in ("builder_cli_attempts.json", "head_cli_attempts.json", "reviewer_cli_attempts.json"):
+                f = Path(runs_dir) / run_id / name
+                try:
+                    data = _json.loads(f.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                attempts += [a for a in (data if isinstance(data, list) else data.get("attempts", []))
+                             if isinstance(a, dict) and a.get("status") == "FAILED" and a.get("error")]
+            # The attempts file is rewritten per builder call, so it holds the LAST attempts: pair newest with newest,
+            # timeouts with timeout messages. Older timeouts of the same run/provider/length get the same reason.
+            known = []
+            for r in reversed(pending):
+                is_timeout = r["status"] == "TIMEOUT"
+                match = next((a for a in reversed(attempts) if a.get("provider") == r["provider"]
+                              and ("TIMEOUT" in str(a["error"]).upper()) == is_timeout), None)
+                if match is not None:
+                    attempts.remove(match)
+                    why = classify(exit_code=r["exit_code"], timed_out=is_timeout, error=str(match["error"]))
+                    known.append((r["provider"], r["duration_sec"] or 0, why))
+                else:
+                    why = next((w for prov, dur, w in known if prov == r["provider"] and is_timeout
+                                and w["code"] == "NO_OUTPUT_TIMEOUT" and abs(dur - (r["duration_sec"] or 0)) < 6), None)
+                    if why is None:
+                        continue
+                conn.execute("UPDATE ai_usage SET error_code=?, error_label=?, error_detail=? WHERE id=?",
+                             (why["code"], why["label"], why["detail"], r["id"]))
+                updated += 1
+    return updated
 
 
 def mission_calls(mission_id: str, limit: int = 400) -> List[Dict[str, Any]]:

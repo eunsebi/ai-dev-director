@@ -108,3 +108,30 @@ Known unrelated on this Mac: `test_v020_provider_ops.py` needs `requests` (colle
   - 카드 역할 표시(`provider_health.current_role`)와 `_node_activity`는 원래 "HEAD, BUILDER"처럼 여러 역할을 지원하므로 그대로 둔다.
 - 주의: 같은 AI가 구현과 검토를 함께 맡으면 독립 검토 효과가 줄어든다. Claude가 HEAD와 BUILDER를 겸하면 같은 구독의 5시간 사용 한도를 함께 쓴다(2026-11-07 M1에서 Claude BUILDER가 4초 만에 exit 1로 끝난 원인이 `usage_limit_reached` 429였다).
 - 테스트: `tests/test_fork_shared_roles.py`(27개 조합 저장·적용, 겸임 시 에이전트 연결과 카드 역할 기록). `tests/test_v304_roles.py`의 무효 사례에서 "중복"을 "역할 누락"으로 바꿨다.
+
+## 실패 원인 보기·알림, 목록 스크롤, Claude 호출 기록 누락 (2026-11-07)
+- **문제**
+  - 작업 장부(`ai_usage`)는 ERROR/TIMEOUT만 남기고 이유를 버렸다. 그래서 사용 한도 초과, 시간 초과, 로그인 만료를 화면에서 구분할 수 없었다.
+  - 스테이지의 「진행 기록」과 「최근 AI 호출」 목록이 잘려서 스크롤도 되지 않았다.
+  - Claude CLI 경로가 `~/.local/share/claude/versions/2.1.319`라서 `provider_of`가 이를 Claude로 알아보지 못했다. 그래서 **Claude 호출이 장부에 한 번도 기록되지 않았다**(작업량 "호출 없음").
+- **변경**
+  - `core/failure_reason.py`
+    - `classify()`: 종료 코드, 시간 초과 사유, 출력 내용으로 원인을 나눈다. 사용 한도(풀리는 시각 포함), 요청 과다, 토큰 한도, 로그인, 과부하, 네트워크, 출력 없음 시간 초과, 제한 시간, 강제 종료, 응답 형식, CLI 오류. 원인마다 한국어 설명과 할 일을 붙인다.
+    - `classify_step()`: 단계 실패를 나눈다. 구현 실패와 그 안의 원인, 검수 불합격, 빌드·테스트 실패, AI 없음, 내부 오류, 사용자 결정.
+    - Claude 응답이 잘려 원인이 안 보이면, 읽기 전용으로 세션 기록(`~/.claude/projects/*/<session>.jsonl`)에서 API 오류를 찾는다.
+  - `core/usage.py`
+    - 장부에 `error_code/label/detail` 열을 추가했다(없으면 ALTER).
+    - `recent_calls`에 원인을 담는다. `recent_failures()`를 새로 만들었다.
+    - `backfill_failure_reasons()`: 예전 호출은 run의 `*_cli_attempts.json`에서 원인을 찾아 붙인다. 최근 것끼리, 시간 초과는 시간 초과끼리 짝짓는다.
+    - `provider_of`: `versions/<x>`의 상위 폴더 이름과 Windows 경로도 알아본다.
+  - `dashboard_server.py`: `/ops/activity`에 `failures`를 넣는다. 최근 72시간의 호출 실패, 원인별 건수, 단계 실패(`state_transitions`의 FAIL/HUMAN_REQUIRED/TIMEOUT)와 원인을 담는다. 최근 호출은 15건에서 30건으로 늘렸다.
+  - `core/alerts.py`
+    - Mac 알림 센터 배너를 띄운다(`osascript`, 추가 설치 없음).
+    - AI 호출이 실패하거나(강제 종료는 제외) 단계가 실패하면 알린다. 같은 원인은 10분에 한 번만 알린다.
+    - 테스트 중이거나 `DIRECTOR_MAC_ALERTS=0`이면 끈다.
+  - `console/stage.*`
+    - 두 목록에 스크롤을 넣었다(진행 기록 25건, 호출 30건).
+    - 항목을 누르면 자세한 내용이 펼쳐진다(원인, 할 일, run). 실패한 호출은 상태 대신 원인을 보여 준다.
+    - 「최근 AI 호출」 옆에 「실패 원인 N」 버튼을 두었다. 원인별 요약, 단계 실패, 호출 실패 목록을 보여 준다.
+    - 새 실패가 생기면 화면 위에 알림이 뜬다(「원인 보기」). 「브라우저 알림 켜기」를 누르면 탭이 뒤에 있을 때도 알림이 온다.
+- **테스트**: `tests/test_fork_failure_reasons.py`. 덤으로 `test_v307` 중 `test_claude_reported_tokens_are_exact`가 이제 맥에서도 통과한다(Windows 경로 처리 때문).

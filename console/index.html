@@ -79,7 +79,7 @@
     <div id="share-bar" class="share" aria-hidden="true"><i data-p="ANTHROPIC"></i><i data-p="GOOGLE"></i><i data-p="OPENAI"></i></div>
     <div id="role-rows"></div>
     <section class="feed">
-      <span class="kicker">최근 AI 호출</span>
+      <div class="feed-head"><span class="kicker">최근 AI 호출</span><button type="button" id="fail-open" class="fail-open">실패 원인</button></div>
       <ol id="call-feed"></ol>
     </section>
     <small class="footnote">~ 는 글자 수로 추정한 값, 없으면 CLI가 보고한 실제 토큰입니다.</small>
@@ -99,4 +99,9 @@
 <div id="workshop" hidden><iframe id="workspace" title="AI DEV 작업실"></iframe></div>
 <div id="shell-error" role="alert" hidden></div>
 <div id="project-menu" role="menu" hidden></div>
+<div id="fail-toast" role="alert" hidden><span id="fail-toast-text"></span><button type="button" id="fail-toast-go">원인 보기</button><button type="button" id="fail-toast-x" aria-label="닫기">×</button></div>
+<div id="fail-panel" hidden><section class="glass" role="dialog" aria-modal="true" aria-labelledby="fail-title">
+  <header><h3 id="fail-title">실패 원인 · 최근 72시간</h3><button type="button" id="fail-notify">브라우저 알림 켜기</button><button type="button" id="fail-close" aria-label="닫기">×</button></header>
+  <div id="fail-body"></div>
+</section></div>
 </body></html>
