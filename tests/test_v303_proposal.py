@@ -47,7 +47,9 @@ def test_whole_batch_checked_before_any_write(tmp_path, monkeypatch, path):
 
 @pytest.mark.parametrize('head_stop,always_wrong,review_only,expected,builds',[
     (False,False,False,'PASS',2),(True,True,False,'HUMAN_REQUIRED',1),
-    (False,True,False,'FAIL',3),(False,False,True,'PASS',2)])
+    # always_wrong rewrites the same failing code: since the repair-speed fork (2026-11-08) the run stops after the
+    # first correction round that changed nothing while tests fail (REPAIR_NO_PROGRESS) instead of spending a 3rd.
+    (False,True,False,'FAIL',2),(False,False,True,'PASS',2)])
 def test_failed_tests_return_to_head_and_builder(tmp_path, monkeypatch,head_stop,always_wrong,review_only,expected,builds):
     from tests.test_v0234_resume_parity import _mock_orch
     from schemas.builder_result import BuilderResultSchema

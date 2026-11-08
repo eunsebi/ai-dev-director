@@ -610,7 +610,9 @@ class Orchestrator:
                     self.pm.parse_cli_error(domain, err)
                 except Exception:
                     pass
-            if cat in self.PROVIDER_DOWN or attempt == attempts - 1 or "PROVIDER_UNAVAILABLE" in err:
+            # TIMEOUT: retrying the same provider usually burns another full timeout (10+ min); move on at once.
+            if (cat in self.PROVIDER_DOWN or cat == ErrorCategory.TIMEOUT or attempt == attempts - 1
+                    or "PROVIDER_UNAVAILABLE" in err):
                 if not self._swap_agent("builder", run_id, logger, tried, "BUILDING", err) and cat in self.PROVIDER_DOWN:
                     break
 
@@ -628,6 +630,19 @@ class Orchestrator:
         return builder_result, self._stop(run_id, state, f"Builder failed after {len(history) - round_start} attempt(s) across "
                                           f"{', '.join(sorted(tried))}: {err}", logger, provenance_records)
 
+    @classmethod
+    def _content_state(cls, worktree_path: str) -> Dict[str, Any]:
+        """Like _dirty_state but by content: a Builder that rewrites a file with the same text made no progress."""
+        import hashlib
+        wt = Path(worktree_path).resolve()
+        out = {}
+        for rel in cls._dirty_state(worktree_path):
+            try:
+                out[rel] = hashlib.sha1((wt / rel).read_bytes()).hexdigest()
+            except OSError:
+                out[rel] = None
+        return out
+
     @staticmethod
     def _dirty_state(worktree_path: str) -> Dict[str, Any]:
         """Every path that differs from HEAD (untracked, intent-to-add, modified, deleted) -> (mtime, size)."""
@@ -638,7 +653,10 @@ class Orchestrator:
             return {}
         state = {}
         for line in out.splitlines():
-            rel = line[3:].strip().strip('"')
+            # _run_git strips the output, so the FIRST line loses its leading space (" M a.py" -> "M a.py"):
+            # a fixed line[3:] then cut the file name's first letter. Drop the 1-2 status letters instead.
+            rel = line[3:] if len(line) > 2 and line[2] == " " else line[2:]
+            rel = rel.strip().strip('"')
             if " -> " in rel:
                 rel = rel.split(" -> ", 1)[1]
             rel = rel.replace("\\", "/")
@@ -1202,6 +1220,54 @@ class Orchestrator:
                 reasons.append(f"REGRESSION: baseline {base_count} -> post {post_count}")
         return reasons
 
+    COMPILE_FIX_MARKER = "\nCOMPILE FIX ORDER: "
+
+    def _compile_fix_rounds(self, run_id: str, order: OrderSchema, worktree_path: str, verification: Dict[str, Any],
+                            builder_result, baseline_pass_count: int, logger: logging.Logger, provenance_records: list):
+        """A build that does not compile goes straight back to the Builder with the compiler's own error lines,
+        without a Reviewer/HEAD round (each costs minutes and can only say "it does not build"). Bounded by
+        autonomy.compile_fix_rounds (default 2) and does not use the HEAD repair budget (max_repairs).
+        Returns (verification, builder_result, stop)."""
+        auto = self.config.get('autonomy', {}) or {}
+        limit = int(auto.get('compile_fix_rounds', 2) or 0)
+        if not auto.get('enabled') or limit <= 0:
+            return verification, builder_result, None
+        done = 0
+        while (done < limit and not verification.get('passed')
+               and (verification.get('build') or {}).get('executed')
+               and not (verification.get('build') or {}).get('passed')
+               and verification.get('build_errors')):
+            done += 1
+            errors = verification['build_errors']
+            fix = {'round': done, 'instruction': (
+                       'The code does not compile. Fix exactly these compiler errors with the smallest change that '
+                       'keeps the ORDER goal and every acceptance criterion; do not redesign or drop features.'),
+                   'build_errors': errors}
+            base_ctx = (order.context or '').split(self.COMPILE_FIX_MARKER, 1)[0]
+            order.context = base_ctx + self.COMPILE_FIX_MARKER + json.dumps(fix, ensure_ascii=False)
+            self._save_json(run_id, 'order.json', order)
+            self.sm.log_audit(run_id, 'ORCHESTRATOR', 'COMPILE_FIX', json.dumps(fix, ensure_ascii=False)[:1500])
+            self.sm.transition_to(run_id, State.BUILDING, details=f'Compile fix {done}/{limit}: {len(errors)} compiler error(s)')
+            logger.info('State -> BUILDING (compile fix %s/%s, %s error(s), review skipped)', done, limit, len(errors))
+            before = self._content_state(worktree_path)
+            built, stop = self.run_builder_stage(run_id, order, worktree_path, None, logger, provenance_records)
+            order.context = base_ctx
+            self._save_json(run_id, 'order.json', order)
+            if stop:
+                return verification, builder_result, stop
+            if self._content_state(worktree_path) == before:
+                logger.warning('[Compile fix] Builder changed nothing; handing the failure to review/HEAD')
+                self.sm.transition_to(run_id, State.VERIFYING, details='Compile fix made no change')
+                break
+            builder_result = built
+            self.sm.transition_to(run_id, State.VERIFYING, details=f'Verifying compile fix {done}')
+            logger.info('State -> VERIFYING (compile fix %s)', done)
+            verification, stop = self.validate_post_build(run_id, order, worktree_path, baseline_pass_count, logger,
+                                                          provenance_records)
+            if stop:
+                return verification, builder_result, stop
+        return verification, builder_result, None
+
     def _finalize(self, run_id: str, decision: DecisionSchema, review_result: ReviewResultSchema, logger: logging.Logger,
                   provenance_records: list, order=None, builder_result=None, verification=None, worktree_path=None) -> Dict[str, Any]:
         if (self._proxy() and decision.decision == "HUMAN_REQUIRED"
@@ -1228,19 +1294,34 @@ class Orchestrator:
                 repair_order = {'round': len(rounds), 'head': decision.model_dump(),
                                 'review': review_result.model_dump(),
                                 'test_summary': verification.get('summary'),
+                                'build_errors': verification.get('build_errors') or [],
                                 'test_output': (verification.get('test', {}).get('output') or '')[-12000:]}
                 marker = '\nHEAD REPAIR ORDER: '
                 order.context = (order.context or '').split(marker, 1)[0] + marker + json.dumps(repair_order, ensure_ascii=False)
                 self._save_json(run_id, 'order.json', order)
                 self.sm.transition_to(run_id, State.BUILDING, details='HEAD requested correction round ' + str(len(rounds)))
                 logger.info('State -> BUILDING (automatic correction round %s)', len(rounds))
+                before = self._content_state(worktree_path)
                 built, stop = self.run_builder_stage(run_id, order, worktree_path, None, logger, provenance_records)
                 if stop: return stop
+                if not verification.get('passed') and self._content_state(worktree_path) == before:
+                    # The Builder declined (e.g. the fix needs a file outside allowed_paths) while the build/tests
+                    # fail: verifying the same code again gives the same failure and the final gate can never pass.
+                    # Stop now so the mission planner re-plans. (With green verification an unchanged round still
+                    # goes back to review: the earlier review may have been wrong.)
+                    why = (built.summary or '').strip()[:600] or 'no changes proposed'
+                    return self._stop(run_id, State.FAIL,
+                                      f'REPAIR_NO_PROGRESS: correction round {len(rounds)} changed no file. '
+                                      f'Builder: {why}. HEAD next steps: {"; ".join(decision.next_steps or [])[:600]}',
+                                      logger, provenance_records, 'REPAIR_NO_PROGRESS')
                 self.sm.transition_to(run_id, State.VERIFYING, details='Testing HEAD correction')
                 logger.info('State -> VERIFYING (automatic correction)')
                 baseline = self.baseline_evidence(run_id) or {}
-                verified, stop = self.validate_post_build(run_id, order, worktree_path,
-                    (baseline.get('test_counts') or {}).get('passed', 0), logger, provenance_records)
+                base_pass = (baseline.get('test_counts') or {}).get('passed', 0)
+                verified, stop = self.validate_post_build(run_id, order, worktree_path, base_pass, logger, provenance_records)
+                if stop: return stop
+                verified, built, stop = self._compile_fix_rounds(run_id, order, worktree_path, verified, built,
+                                                                 base_pass, logger, provenance_records)
                 if stop: return stop
                 self.sm.transition_to(run_id, State.REVIEWING, details='Independent review of correction')
                 logger.info('State -> REVIEWING (automatic correction)')
@@ -1542,6 +1623,10 @@ class Orchestrator:
         self.sm.transition_to(run_id, State.VERIFYING, details="Orchestrator running build/test/diff verification")
         logger.info("State -> VERIFYING")
         verification, stop = self.validate_post_build(run_id, order, worktree_path, baseline_pass_count, logger, provenance_records)
+        if stop:
+            return stop
+        verification, builder_result, stop = self._compile_fix_rounds(run_id, order, worktree_path, verification, builder_result,
+                                                                      baseline_pass_count, logger, provenance_records)
         if stop:
             return stop
 

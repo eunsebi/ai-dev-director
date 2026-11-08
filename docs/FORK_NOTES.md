@@ -158,3 +158,26 @@ Known unrelated on this Mac: `test_v020_provider_ops.py` needs `requests` (colle
   - 문제: Claude Code가 `git apply`로 반영하고 미션 JSON에 `applied`를 적으면 `result_state`가 READY로 남는다. 그래서 「작업실」 배지와 "적용 대기 N건"이 계속 떠 있었다.
   - 수정: `ResultManager.sync_manual_applies()`(`pending_results()`가 호출)가 처리한다. `applied.status == "applied"`인 미션에서 반영된 run까지의 PASS 단계를 APPLIED로 바꾸고, 감사 기록 `RESULT_APPLIED_MANUAL`을 남긴다. 작업본이 없으면 `worktree_state`를 MISSING으로 둔다.
 - **테스트**: `tests/test_fork_subscription_limits.py`. `test_v309` 엔드포인트 목록에 `/ops/limits`를 추가했다.
+
+## 고치기 반복 속도: 컴파일 오류 전달, 컴파일 즉시 수정, 진전 없음 중단, 고칠 부분만 수정 (2026-11-08)
+- **배경**: 어디야 F2 미션(RUN-261108005514)이 1시간 23분 걸리고 FAIL로 끝났다. 사용량 한도 문제를 빼고 보면 원인은 다섯 가지였다.
+  1. 빌드 로그(50KB)의 끝부분만 넘어가서 실제 컴파일 오류 줄이 아무에게도 전달되지 않았다.
+  2. 컴파일되지 않는 코드도 Reviewer(약 12분)와 HEAD 판정을 거쳤다.
+  3. 고치기 라운드에서 Builder가 아무것도 바꾸지 않았는데도(필요한 파일이 허용 범위 밖) 검증·검토·판정을 두 번 더 돌았다.
+  4. 시간 초과한 제공자에게 다시 맡겨 10분을 또 썼다.
+  5. 고치기 라운드마다 프로젝트 전체(약 19만 자)와 "ORDER를 구현하라"는 지시를 다시 보냈다. 그래서 Builder가 매번 처음부터 다시 작업했다.
+- **수정**
+  - `core/verifier.py` `error_digest()`: 빌드가 실패하면 컴파일러 오류 줄(`파일:줄: error:`, tsc, Python 예외)만 뽑아 `verification.build_errors`에 넣는다. 작업본 경로는 떼어 내고 중복은 없앤다.
+  - Reviewer 2종(`BUILD ERRORS`)과 HEAD 2종(`build_errors`), HEAD 고치기 지시(`HEAD REPAIR ORDER.build_errors`)에 이 목록을 넣는다.
+  - `core/orchestrator.py` `_compile_fix_rounds()`: 빌드가 실패하고 오류 줄이 있으면 Reviewer/HEAD를 건너뛰고 `COMPILE FIX ORDER`로 바로 Builder에게 돌려보낸다. 횟수는 `autonomy.compile_fix_rounds`(기본 2, 0이면 끔)로 정하며 `max_repairs`와 따로 센다. 상태 전환표에 VERIFYING → BUILDING을 추가했다.
+  - 고치기 라운드에서 파일 내용이 그대로이고 직전 검증도 실패했으면 `REPAIR_NO_PROGRESS`로 바로 FAIL한다. 그러면 미션 계획 단계가 다시 계획한다. 검증이 통과한 상태라면 예전처럼 다시 검토한다.
+  - Builder가 TIMEOUT으로 실패하면 같은 제공자로 다시 시도하지 않고 바로 다른 제공자로 넘긴다.
+  - `agents/proposal_builder.py` 고치기 모드: context에 `HEAD REPAIR ORDER`나 `COMPILE FIX ORDER`가 있으면 다음만 보낸다.
+    - 고칠 목록: 컴파일 오류, HEAD next_steps, 검토 P0/P1. P2와 테스트 출력은 뺀다.
+    - 관련 파일 최대 12개: 오류 줄에 나온 파일 → 이름이나 CamelCase 타입 이름이 언급된 파일 → 이번 작업에서 바꾼 파일. 허용 범위 밖 파일은 읽기 전용으로 보낸다.
+    - 오류 줄 앞뒤 10줄(줄 번호 포함).
+    - "다시 만들지 말고 이것만 최소 수정" 지시.
+  - 3,000자가 넘는 기존 파일을 통째로 다시 쓰면 `REPAIR_REWRITE`로 거부한다. 관련 파일을 찾지 못하면 예전처럼 전체 프롬프트를 보낸다. F2 기록 기준으로 프롬프트가 21.4만 자에서 1.3만~6.1만 자로 줄었다.
+  - Builder가 참고로 읽는 파일 종류에 `.swift`·`.kt`·`.go`·`.rs` 등을 추가했다. 예전에는 허용 범위 밖의 Swift 파일이 Builder에게 보이지 않았다.
+  - 기존 버그: `_dirty_state()`는 `_run_git`이 strip한 첫 줄을 `line[3:]`로 잘라서 파일 이름의 첫 글자를 잃었다(`feature.py` → `eature.py`).
+- **테스트**: `tests/test_fork_repair_speed.py`(17개). `test_v303`의 always_wrong 경우는 빌드 횟수 기대값을 3에서 2로 바꿨다(진전 없음 중단).

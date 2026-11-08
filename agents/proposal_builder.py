@@ -1,6 +1,8 @@
 """Builder proposes complete file contents; Director validates and applies them."""
 import json
 import os
+import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -107,7 +109,7 @@ class ProposalBuilder(AntigravityBuilder):
                 continue
             allowed, _ = SafetyPolicy.check_pre_tool_file_write(rel, str(root), order.allowed_paths, order.protected_paths)
             # Write protection must not hide baseline source from a fork/upgrade.
-            readable_source = path.suffix.lower() in {'.py', '.js', '.ts', '.tsx', '.jsx', '.md', '.toml'}
+            readable_source = path.suffix.lower() in self.READABLE_SOURCE
             sensitive = any(word in rel.lower() for word in ('secret', 'credential', 'token', 'private_key'))
             if sensitive or path.stat().st_size >= 100_000:
                 continue
@@ -121,13 +123,19 @@ class ProposalBuilder(AntigravityBuilder):
         # not fit is listed by path only and the Builder is told not to rewrite it.
         order_text = '\n'.join([order.goal, order.context or '', *order.acceptance_criteria])
         wanted = {p for p in (autopilot_output(r) for r in order.required_outputs) if p}
+        notes = self.repair_notes(order.context)
+        if notes:
+            focused = self._repair_run(order, root, notes, editable, context, candidates, documents)
+            if focused is not None:
+                return focused
 
         def rank(item):
             rel, path = item
             named = rel in order_text or Path(rel).name in order_text
             return (0 if rel in wanted else 1 if named else 2, path.stat().st_size, rel)
         editable.sort(key=rank)
-        context.sort(key=lambda item: ('test' in Path(item[0]).name.lower() or '/tests/' in '/' + item[0], item[0]))
+        context.sort(key=lambda item: (not (item[0] in order_text or Path(item[0]).name in order_text),
+                                       'test' in Path(item[0]).name.lower() or '/tests/' in '/' + item[0], item[0]))
         omitted = []
         for budget, group in ((self.EDITABLE_BUDGET, editable), (self.CONTEXT_BUDGET, context)):
             used = 0
@@ -155,6 +163,9 @@ class ProposalBuilder(AntigravityBuilder):
                   '\nREFERENCE SOURCE FILES (read-only unless ORDER allows writes; omitted files are not necessarily absent):\n' + json.dumps(sources, ensure_ascii=False)
                   + ('\nWRITABLE FILES NOT SHOWN (too large for this prompt; they exist - do NOT rewrite or edit them): '
                      + json.dumps(omitted) if omitted else ''))
+        return self._invoke_and_apply(prompt, order, root, repair=False)
+
+    def _invoke_and_apply(self, prompt, order, root, repair):
         domain = self.provider.upper()
         runner = TriadResearchRunner(executables={domain: self.executable}, timeout=self.timeout,
                                      no_output_timeout=self.no_progress_timeout)
@@ -194,12 +205,12 @@ class ProposalBuilder(AntigravityBuilder):
         edits = proposal.get('edits') or []
         if not isinstance(files, list) or not isinstance(edits, list):
             raise ValueError('Builder must return a bounded nonempty files list')
-        if not files and not edits and 'HEAD REPAIR ORDER' in (order.context or ''):
+        if not files and not edits and any(m in (order.context or '') for m in ('HEAD REPAIR ORDER', 'COMPILE FIX ORDER')):
             # In a correction round "nothing needs to change" is a legitimate answer: the Director re-verifies and the
             # Reviewer/HEAD judge the existing changes again (the repair budget bounds this).
             return BuilderResultSchema(status='COMPLETED', files_modified=[], commands_run=[result['invocation']],
                                        summary='No further changes proposed: ' + str(proposal.get('summary', ''))[:500])
-        new_contents = self.resolve_changes(files, edits, root, order)
+        new_contents = self.resolve_changes(files, edits, root, order, repair=repair)
         if not new_contents or len(new_contents) > order.max_files_changed:
             raise ValueError('Builder must return a bounded nonempty files list')
         # The complete batch was validated (paths, exact edit anchors) before the first file is written.
@@ -211,8 +222,170 @@ class ProposalBuilder(AntigravityBuilder):
     EDITABLE_BUDGET = 140_000
     CONTEXT_BUDGET = 60_000
 
+    READABLE_SOURCE = {'.py', '.js', '.ts', '.tsx', '.jsx', '.md', '.toml', '.swift', '.m', '.mm', '.h', '.c', '.cc',
+                       '.cpp', '.kt', '.kts', '.java', '.go', '.rs', '.cs', '.rb', '.php', '.dart', '.vue', '.svelte'}
+    REPAIR_MARKERS = ('\nHEAD REPAIR ORDER: ', '\nCOMPILE FIX ORDER: ')
+    REPAIR_EDITABLE_BUDGET = 90_000
+    REPAIR_CONTEXT_BUDGET = 40_000
+    REPAIR_MAX_FOCUS = 12
+    REWRITE_LIMIT = 3_000          # in a repair round an existing file larger than this is changed by edits only
+
+    @classmethod
+    def repair_notes(cls, context):
+        """The Director's repair instructions in ORDER.context: {'head_repair': {...}, 'compile_fix': {...}} or {}."""
+        text = context or ''
+        out = {}
+        for key, marker in zip(('head_repair', 'compile_fix'), cls.REPAIR_MARKERS):
+            i = text.rfind(marker)
+            if i < 0:
+                continue
+            try:
+                out[key] = json.JSONDecoder().raw_decode(text[i + len(marker):].lstrip())[0]
+            except ValueError:
+                out[key] = {'raw': text[i + len(marker):][:4000]}
+        return out
+
     @staticmethod
-    def resolve_changes(files, edits, root, order):
+    def defects(notes):
+        """The concrete things to fix, in order: compiler errors, HEAD's steps, reviewer P0/P1."""
+        items = []
+        for n in (notes.get('compile_fix') or {}, notes.get('head_repair') or {}):
+            items += [str(e) for e in n.get('build_errors') or []]
+        head = (notes.get('head_repair') or {}).get('head') or {}
+        items += [str(x) for x in head.get('next_steps') or []]
+        review = (notes.get('head_repair') or {}).get('review') or {}
+        items += [str(x) for x in (review.get('p0') or []) + (review.get('p1') or [])]
+        if not items and (notes.get('head_repair') or {}).get('raw'):
+            items.append(notes['head_repair']['raw'])
+        seen = []
+        for it in items:
+            if it not in seen:
+                seen.append(it)
+        return seen
+
+    @staticmethod
+    def _changed_files(root):
+        try:
+            out = subprocess.run(['git', '-c', 'core.quotepath=false', 'status', '--porcelain', '-uall'], cwd=root,
+                                 capture_output=True, text=True, timeout=30).stdout
+        except Exception:
+            return []
+        files = []
+        for line in out.splitlines():
+            if len(line) > 3:
+                rel = line[3:].strip().strip('"')
+                files.append(rel.split(' -> ', 1)[-1].replace('\\', '/'))
+        return files
+
+    @classmethod
+    def focus_files(cls, defects, candidates_rel, changed):
+        """Files the defects name (path, file name, or a CamelCase type name that is a file stem), then the files
+        this run already changed."""
+        text = '\n'.join(defects)
+        named = []
+        for rel in candidates_rel:
+            name = Path(rel).name
+            stem = Path(rel).stem
+            hit = rel in text or name in text
+            if not hit and len(stem) >= 6 and re.search(r'[A-Z]', stem[1:]) and re.search(r'\b' + re.escape(stem) + r'\b', text):
+                hit = True
+            if hit:
+                named.append(rel)
+        # most specific first: files with an error line, then the others named, then this run's changes
+        errs = [rel for rel in named if re.search(re.escape(rel) + r':\d+', text)]
+        ordered = errs + [r for r in named if r not in errs] + [r for r in changed if r in candidates_rel]
+        out = []
+        for r in ordered:
+            if r not in out:
+                out.append(r)
+        return out[:cls.REPAIR_MAX_FOCUS]
+
+    @staticmethod
+    def error_snippets(defects, root, radius=10, limit=12):
+        """Numbered source lines around each `path:line:` compiler error, so the fix can be an exact edit."""
+        out, seen = [], set()
+        for d in defects:
+            m = re.match(r'^([^:\s][^:]*):(\d+)(?::\d+)?: (?:fatal )?error: ', d)
+            if not m or (m.group(1), m.group(2)) in seen:
+                continue
+            seen.add((m.group(1), m.group(2)))
+            path = Path(root) / m.group(1)
+            try:
+                lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
+            except OSError:
+                continue
+            n = int(m.group(2))
+            lo, hi = max(1, n - radius), min(len(lines), n + radius)
+            body = '\n'.join(f'{i:5d}{">" if i == n else " "} {lines[i - 1]}' for i in range(lo, hi + 1))
+            out.append(f'--- {m.group(1)} (error at line {n})\n{body}')
+            if len(out) >= limit:
+                break
+        return out
+
+    def _repair_run(self, order, root, notes, editable, context, candidates, documents):
+        """Repair round: send only the defects and the files they concern, and ask for minimal edits. The earlier
+        rounds' work is already in the worktree; re-sending the whole project (~190 KB) with "implement the ORDER"
+        made the Builder re-do the work, slowly (600 s timeouts) and with new mistakes. Returns None to fall back to
+        the full prompt when no file can be tied to the defects."""
+        defects = self.defects(notes)
+        if not defects:
+            return None
+        all_rel = [p.relative_to(root).as_posix() for p in candidates if p.is_file() and not p.is_symlink()]
+        changed = self._changed_files(str(root))
+        focus = self.focus_files(defects, all_rel, changed)
+        editable_rel = {rel for rel, _ in editable}
+        readable_rel = {rel for rel, _ in context}
+        if not any(f in editable_rel for f in focus):
+            return None
+        sources, readonly, omitted_focus = {}, {}, []
+        used_e = used_c = 0
+        for rel in focus:
+            path = root / rel
+            if rel in editable_rel:
+                text = path.read_text(encoding='utf-8', errors='replace')
+                if used_e + len(text) <= self.REPAIR_EDITABLE_BUDGET:
+                    sources[rel] = text
+                    used_e += len(text)
+                else:
+                    omitted_focus.append(rel)
+            elif rel in readable_rel:
+                text = path.read_text(encoding='utf-8', errors='replace')
+                if used_c + len(text) <= self.REPAIR_CONTEXT_BUDGET:
+                    readonly[rel] = text
+                    used_c += len(text)
+        not_shown = [rel for rel in sorted(editable_rel) if rel not in sources]
+        self.last_context_files = list(sources) + list(readonly)
+        self.last_omitted_files = omitted_focus
+        snippets = self.error_snippets(defects, root)
+        order_brief = {'goal': order.goal, 'acceptance_criteria': order.acceptance_criteria,
+                       'allowed_paths': order.allowed_paths, 'protected_paths': order.protected_paths,
+                       'max_files_changed': order.max_files_changed}
+        prompt = (
+            'You are the implementation Builder in a REPAIR round. Do not use tools. '
+            'The ORDER was already implemented in earlier rounds: that work is in the files below. '
+            'Do NOT re-implement, restructure or rewrite anything. Fix ONLY the DEFECTS listed, with the smallest '
+            'possible change. Return ONLY JSON: {"edits":[{"path":"existing/file","old":"exact text copied from that '
+            'file","new":"replacement text"}],"files":[{"path":"new/file","content":"..."}],"summary":"..."}. '
+            'Use "edits" for every existing file (each "old" must appear EXACTLY ONCE, copied verbatim with indentation; '
+            'line numbers in ERROR CONTEXT are NOT part of the file). Use "files" only for a genuinely new file. '
+            'Keep every acceptance criterion and existing behavior. If a defect can only be fixed in a file you may not '
+            'write, change nothing for it and name that file in summary. '
+            'Director host Python is ' + sys.version.split()[0] + '; platform is ' + sys.platform + '.'
+            + '\nDEFECTS TO FIX (in priority order):\n' + json.dumps(defects, ensure_ascii=False, indent=1)
+            + ('\nERROR CONTEXT (numbered lines, > marks the error line):\n' + '\n'.join(snippets) if snippets else '')
+            + '\nORDER (for reference only - already implemented):\n' + json.dumps(order_brief, ensure_ascii=False)
+            + ('\nREFERENCE DOCUMENTS:\n' + json.dumps(documents, ensure_ascii=False) if documents else '')
+            + '\nFILES YOU MAY EDIT (current content):\n' + json.dumps(sources, ensure_ascii=False)
+            + ('\nREAD-ONLY FILES NAMED BY THE DEFECTS (outside allowed_paths; do not edit):\n'
+               + json.dumps(readonly, ensure_ascii=False) if readonly else '')
+            + ('\nOTHER WRITABLE FILES (exist, not shown: leave them unchanged): ' + json.dumps(not_shown[:200])
+               if not_shown else ''))
+        result = self._invoke_and_apply(prompt, order, root, repair=True)
+        self.last_execution_info['repair_focus'] = {'defects': len(defects), 'focus': focus, 'prompt_chars': len(prompt)}
+        return result
+
+    @staticmethod
+    def resolve_changes(files, edits, root, order, repair=False):
         """Full-file proposals and exact search/replace edits -> {path: new content}. Nothing is written here; any
         denied path, duplicate, or edit anchor that is missing or ambiguous rejects the whole batch."""
         root = Path(root)
@@ -228,6 +401,10 @@ class ProposalBuilder(AntigravityBuilder):
                 raise ValueError('Invalid/duplicate proposed file')
             seen.add(rel.casefold())
             allowed(rel)
+            existing = root / rel
+            if repair and existing.is_file() and existing.stat().st_size > ProposalBuilder.REWRITE_LIMIT:
+                raise ValueError(f'REPAIR_REWRITE: {rel} exists; in a repair round change existing files with exact '
+                                 f'"edits" only, never a complete rewrite')
             new_contents[rel] = content
         for edit in edits:
             rel, old, new = edit.get('path'), edit.get('old'), edit.get('new')

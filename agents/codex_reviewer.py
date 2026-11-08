@@ -142,6 +142,8 @@ class CodexReviewer:
             f"VERIFICATION SUMMARY: {verification.get('summary')}\n"
             f"TEST COUNTS (Director's own run): {json.dumps(verification.get('test_counts'))}\n"
             f"TEST OUTPUT TAIL: {((verification.get('test') or {}).get('output') or '')[-1500:]}\n\n"
+            f"BUILD ERRORS (compiler lines from the Director's own build; empty = none): "
+            f"{json.dumps(verification.get('build_errors') or [], ensure_ascii=False)}\n\n"
             f"GIT DIFF:\n```diff\n{git_diff}\n```\n\n"
             "FORMATTING MANDATE:\n"
             "Your output MUST contain a JSON code block formatted as:\n"

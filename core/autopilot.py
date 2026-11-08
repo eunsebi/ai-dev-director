@@ -406,6 +406,9 @@ def builder_retry_feedback(error: str, order: OrderSchema) -> str:
                     "(same indentation and line breaks), make it long enough to be unique, or send the complete file.")
     if "files list" in e or "duplicate" in e:
         tips.append(f"Return between 1 and {order.max_files_changed} distinct files with complete contents.")
+    if "repair_rewrite" in e:
+        tips.append("This is a repair round: change existing files ONLY with small exact \"edits\" for the listed "
+                    "defects. Never send the complete content of an existing file.")
     if "timeout" in e or "timed out" in e:
         tips.append("The previous attempt timed out: deliver a smaller, complete, working increment.")
     if not tips:

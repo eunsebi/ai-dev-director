@@ -22,7 +22,7 @@ VALID_NORMAL_TRANSITIONS = {
     State.PLANNING: [State.ORDER_READY],
     State.ORDER_READY: [State.BUILDING],
     State.BUILDING: [State.VERIFYING],
-    State.VERIFYING: [State.REVIEWING],
+    State.VERIFYING: [State.REVIEWING, State.BUILDING],   # BUILDING: compile fix (build failed, review skipped)
     State.REVIEWING: [State.DECIDING],
     State.DECIDING: [State.PASS, State.BUILDING],
 }

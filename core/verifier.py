@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import shlex
 import shutil
@@ -152,9 +153,14 @@ class Verifier:
         # Parse test metrics (e.g. 4 passed, Ran 4 tests)
         test_counts = cls._parse_test_counts(test_res.get("output", ""))
 
+        build_errors = []
+        if build_res.get("executed") and not build_res.get("passed"):
+            build_errors = cls.error_digest(build_res.get("output", ""), root=str(wt))
+
         return {
             "passed": overall_passed,
             "summary": summary,
+            "build_errors": build_errors,
             "build": build_res,
             "test": test_res,
             "lint": lint_res,
@@ -162,6 +168,51 @@ class Verifier:
             "git_status": git_status,
             "git_diff": git_diff
         }
+
+    # `path:line:col: error: msg` (swift/clang/gcc/rustc-short), `path(line,col): error TS1234: msg` (tsc),
+    # bare `error: msg` lines (xcodebuild, cargo) and Python `XxxError:` tracebacks' last line.
+    _ERR_PATTERNS = (
+        re.compile(r"^(?P<loc>[^\s:][^:]*:\d+(?::\d+)?): (?:fatal )?error: (?P<msg>.+)$"),
+        re.compile(r"^(?P<loc>[^\s(][^(]*\(\d+,\d+\)): error (?P<msg>TS\d+: .+)$"),
+        re.compile(r"^(?P<loc>)(?:fatal )?error: (?P<msg>.+)$"),
+        re.compile(r"^(?P<loc>)(?P<msg>(?:SyntaxError|IndentationError|ModuleNotFoundError|ImportError|NameError): .+)$"),
+    )
+
+    @classmethod
+    def error_digest(cls, output: str, root: Optional[str] = None, limit: int = 40) -> List[str]:
+        """The compiler's own error lines, de-duplicated, with the worktree prefix removed.
+
+        A long build log (xcodebuild prints every compiler invocation) hides the few lines that matter; a tail cut
+        keeps the command lines and loses the errors, so the Builder/Reviewer/HEAD never see why the build failed."""
+        if not output:
+            return []
+        prefixes = []
+        if root:
+            r = str(root).rstrip("/\\")
+            prefixes = [r + "/", r + "\\", str(Path(r).resolve()) + "/"]
+        seen, out = set(), []
+        for raw in output.splitlines():
+            line = raw.strip()
+            if "error" not in line.lower():
+                continue
+            for pat in cls._ERR_PATTERNS:
+                m = pat.match(line)
+                if not m:
+                    continue
+                loc, msg = m.group("loc"), m.group("msg").strip()
+                for p in prefixes:
+                    if loc.startswith(p):
+                        loc = loc[len(p):]
+                        break
+                item = f"{loc}: error: {msg}" if loc else f"error: {msg}"
+                if item not in seen:
+                    seen.add(item)
+                    out.append(item[:400])
+                break
+            if len(out) >= limit:
+                break
+        # file-located errors first: they are the actionable ones (bare `error:` lines are often summaries)
+        return sorted(out, key=lambda s: s.startswith("error:"))
 
     @staticmethod
     def _parse_test_counts(output: str) -> Dict[str, int]:

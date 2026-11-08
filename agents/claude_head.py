@@ -212,6 +212,7 @@ class ClaudeHead(BaseHead):
                 "test_exit_code": test_info.get("exit_code"),
                 "test_counts": verification.get("test_counts"),
                 "test_output": (test_info.get("output") or "")[:800],
+                "build_errors": verification.get("build_errors") or [],
             },
             "git_diff": verification.get("git_diff") or "",
             "review": review_result.model_dump()
