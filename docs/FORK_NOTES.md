@@ -211,3 +211,14 @@ Known unrelated on this Mac: `test_v020_provider_ops.py` needs `requests` (colle
 - **원인**: 모든 DB 접근이 `with sqlite3.connect(...) as conn:` 형태였다. 이 형태는 트랜잭션만 끝내고 연결은 닫지 않는다. Python 3.14에서는 연결이 순환 참조로 남아 GC가 돌 때까지 파일 핸들이 열려 있다(GC를 끄고 20번 부르면 20개가 남는다).
 - **수정** (`core/db_path.py`): `ClosingConnection`과 `connect(path, **kw)`를 추가했다. `with` 블록이 끝나면 커밋(오류면 롤백)한 뒤 연결을 닫고, 결과는 `sqlite3.Row`로 돌려준다. 연결을 만드는 7곳(state_machine, chat_manager, provider_manager, research_state, usage, solomon_bridge, dashboard_server)이 모두 이 함수를 쓴다.
 - **테스트**: `tests/test_fork_db_close.py`(2개). 블록이 끝나면 닫히는지, 오류 때 롤백하는지, GC를 꺼 둔 채 60번 불러도 핸들이 남지 않는지 확인한다.
+
+## macOS 메뉴 막대 앱과 서버 자동 실행 (2026-11-09)
+- **목적**: 터미널 창 없이 Director 서버를 로그인 때 켜고, 켜져 있는지 보고, 켜기·끄기·로그 보기를 메뉴 막대에서 한다.
+- **설치**: `tools/macos/install.sh`(다시 실행하면 갱신, `uninstall`로 제거). 실행한 셸의 PATH를 서버 LaunchAgent에 적어서 서버가 claude/codex/agy를 찾게 한다.
+  - `~/Library/LaunchAgents/local.ai-dev-director.server.plist`: `tools/macos/run_companion.sh` 실행. 로그인 때 시작하고, KeepAlive가 없어서 끄면 꺼진 채로 남는다.
+  - `~/Library/LaunchAgents/local.ai-dev-director.menu.plist`: `~/Applications/Director 메뉴.app` 실행.
+- **run_companion.sh**: 로그 `logs/companion_server.log`(10MB를 넘으면 `.1`로 하나 보관), `PYTHONUNBUFFERED=1`, 실행마다 시작 시각 한 줄.
+- **메뉴 막대 앱** (`tools/macos/DirectorMenu.swift`, Xcode 프로젝트 없이 swiftc로 빌드)
+  - 아이콘: 초록 = 실행 중이고 응답함, 주황 = 실행 중인데 `/status`가 응답하지 않음, 회색 = 꺼짐. 10초마다 다시 확인한다.
+  - 메뉴: 상태(PID·메모리), 대시보드 열기, 켜기·끄기·다시 시작(끄기와 다시 시작은 확인 창을 띄움), 최근 로그 20줄, 로그 보기(콘솔), 로그 폴더 열기.
+  - 켜기·끄기는 `launchctl kickstart` / `launchctl kill SIGTERM`. 서버는 켠 뒤 15초쯤 지나야 응답한다.
