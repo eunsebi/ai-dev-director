@@ -107,6 +107,8 @@ class ProposalBuilder(AntigravityBuilder):
             rel = path.relative_to(root).as_posix()
             if any(p.startswith('.') or p in {'node_modules', '__pycache__', 'data'} for p in Path(rel).parts):
                 continue
+            if self.skip_for_prompt(rel):
+                continue
             allowed, _ = SafetyPolicy.check_pre_tool_file_write(rel, str(root), order.allowed_paths, order.protected_paths)
             # Write protection must not hide baseline source from a fork/upgrade.
             readable_source = path.suffix.lower() in self.READABLE_SOURCE
@@ -129,23 +131,56 @@ class ProposalBuilder(AntigravityBuilder):
             if focused is not None:
                 return focused
 
+        # A narrow allowed_paths entry (e.g. "ea/**" with one file) names its files as well as the goal text does.
+        narrow = set()
+        for pattern in order.allowed_paths or []:
+            hits = [rel for rel, _ in editable if SafetyPolicy.is_path_allowed(rel, [pattern])]
+            if 0 < len(hits) <= self.NARROW_SCOPE_FILES:
+                narrow.update(hits)
+
         def rank(item):
             rel, path = item
-            named = rel in order_text or Path(rel).name in order_text
+            named = rel in order_text or Path(rel).name in order_text or rel in narrow
             return (0 if rel in wanted else 1 if named else 2, path.stat().st_size, rel)
         editable.sort(key=rank)
         context.sort(key=lambda item: (not (item[0] in order_text or Path(item[0]).name in order_text),
                                        'test' in Path(item[0]).name.lower() or '/tests/' in '/' + item[0], item[0]))
-        omitted = []
-        for budget, group in ((self.EDITABLE_BUDGET, editable), (self.CONTEXT_BUDGET, context)):
+        omitted, not_shown = [], []
+        named = [(rel, path) for rel, path in editable if rank((rel, path))[0] < 2]
+        if named:
+            # [fork 2026-11-08] First build, focused: full text for the files the ORDER names, then the files those
+            # (and the ORDER) use by type name, within a smaller budget; every other file by path only. Sending
+            # all writable files (old tests, asset JSON, unrelated screens: ~190 KB) made a slow, 600 s-timeout
+            # prone call and invited rewrites of files the ORDER never asked for.
             used = 0
-            for rel, path in group:
+            for rel, path in named:
                 text = path.read_text(encoding='utf-8', errors='replace')
-                if used + len(text) <= budget:
+                if used + len(text) <= self.EDITABLE_BUDGET:
                     sources[rel] = text
                     used += len(text)
-                elif group is editable:
+                else:
                     omitted.append(rel)
+            refs_text = order_text + '\n' + '\n'.join(sources.values())
+            used = 0
+            for rel, path in [i for i in editable if i[0] not in sources and i[0] not in omitted] + context:
+                if rel in order_text or Path(rel).name in order_text or self.referenced(rel, refs_text):
+                    text = path.read_text(encoding='utf-8', errors='replace')
+                    if used + len(text) <= self.RELATED_BUDGET:
+                        sources[rel] = text
+                        used += len(text)
+                        continue
+                if (rel, path) in editable:
+                    not_shown.append(rel)
+        else:
+            for budget, group in ((self.EDITABLE_BUDGET, editable), (self.CONTEXT_BUDGET, context)):
+                used = 0
+                for rel, path in group:
+                    text = path.read_text(encoding='utf-8', errors='replace')
+                    if used + len(text) <= budget:
+                        sources[rel] = text
+                        used += len(text)
+                    elif group is editable:
+                        omitted.append(rel)
         self.last_context_files = list(sources)          # in priority order: editable first
         self.last_omitted_files = omitted
         prompt = ('You are the implementation Builder. Do not use tools. All source context is supplied below. '
@@ -162,7 +197,9 @@ class ProposalBuilder(AntigravityBuilder):
                   '\nREFERENCE DOCUMENTS:\n' + json.dumps(documents, ensure_ascii=False) +
                   '\nREFERENCE SOURCE FILES (read-only unless ORDER allows writes; omitted files are not necessarily absent):\n' + json.dumps(sources, ensure_ascii=False)
                   + ('\nWRITABLE FILES NOT SHOWN (too large for this prompt; they exist - do NOT rewrite or edit them): '
-                     + json.dumps(omitted) if omitted else ''))
+                     + json.dumps(omitted) if omitted else '')
+                  + ('\nOTHER FILES IN SCOPE (exist, not shown, not needed for this ORDER: leave them unchanged): '
+                     + json.dumps(not_shown[:300]) if not_shown else ''))
         return self._invoke_and_apply(prompt, order, root, repair=False)
 
     def _invoke_and_apply(self, prompt, order, root, repair):
@@ -224,6 +261,32 @@ class ProposalBuilder(AntigravityBuilder):
 
     READABLE_SOURCE = {'.py', '.js', '.ts', '.tsx', '.jsx', '.md', '.toml', '.swift', '.m', '.mm', '.h', '.c', '.cc',
                        '.cpp', '.kt', '.kts', '.java', '.go', '.rs', '.cs', '.rb', '.php', '.dart', '.vue', '.svelte'}
+    RELATED_BUDGET = 40_000
+    NARROW_SCOPE_FILES = 4
+    SKIP_NAMES = {'claude.md', 'agents.md', 'gemini.md', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
+                  'package.resolved', 'podfile.lock', 'cargo.lock', 'poetry.lock'}
+    SKIP_DIR_SUFFIXES = ('.xcassets', '.xcodeproj', '.xcworkspace', '.framework', '.bundle', '.lproj')
+    BINARY_SUFFIXES = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.heic', '.ico', '.icns', '.pdf', '.zip', '.gz',
+                       '.mp3', '.mp4', '.mov', '.wav', '.ttf', '.otf', '.woff', '.woff2', '.a', '.dylib', '.so',
+                       '.o', '.car', '.mlmodel', '.sqlite', '.db', '.p12', '.mobileprovision', '.keystore'}
+
+    @classmethod
+    def skip_for_prompt(cls, rel):
+        """Never worth prompt space: binaries, asset catalogs / project bundles, lock files, agent instruction files
+        (CLAUDE.md can hold server addresses and must not go to another provider)."""
+        p = Path(rel)
+        if p.name.lower() in cls.SKIP_NAMES or p.suffix.lower() in cls.BINARY_SUFFIXES:
+            return True
+        return any(part.lower().endswith(cls.SKIP_DIR_SUFFIXES) for part in p.parts[:-1])
+
+    @staticmethod
+    def referenced(rel, text):
+        """A source file whose stem is used as a type/module name in `text` (CamelCase stems as whole words)."""
+        stem = Path(rel).stem
+        if len(stem) < 4 or not re.search(r'[A-Z]', stem):
+            return False
+        return re.search(r'(?<![A-Za-z0-9_])' + re.escape(stem) + r'(?![A-Za-z0-9_])', text) is not None
+
     REPAIR_MARKERS = ('\nHEAD REPAIR ORDER: ', '\nCOMPILE FIX ORDER: ')
     REPAIR_EDITABLE_BUDGET = 90_000
     REPAIR_CONTEXT_BUDGET = 40_000

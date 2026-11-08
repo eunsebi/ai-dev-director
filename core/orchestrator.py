@@ -40,6 +40,8 @@ class Orchestrator:
         reviewer_agent: Optional[Any] = None
     ):
         self.config = config
+        from core import claude_cli
+        claude_cli.configure(config)        # claude_cli.lean (default true): lean non-interactive Claude calls
         self.sm = state_machine or StateMachine()
         self.timeouts = self.config.get("timeouts", {"head": 300, "builder": 600, "reviewer": 300})
         self.pm = ProviderManager(timeouts=self.timeouts)

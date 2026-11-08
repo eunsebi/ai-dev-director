@@ -12,6 +12,7 @@ from typing import Dict, Any, Optional
 from agents.head import BaseHead
 from core.env_utils import resolve_cli, get_sanitized_env
 from core.process_runner import ProcessTreeRunner
+from core import claude_cli
 from schemas.order import OrderSchema
 from schemas.builder_result import BuilderResultSchema
 from schemas.review_result import ReviewResultSchema
@@ -126,15 +127,19 @@ class ClaudeHead(BaseHead):
         self.logger.info(f"[Claude Head] Invoking CLI via ProcessTreeRunner: {self.executable} (cwd={cwd})")
 
         sanitized_env = get_sanitized_env()
-        res = ProcessTreeRunner.run(
-            argv=cmd,
-            cwd=cwd,
-            env=sanitized_env,
-            timeout=self.timeout,
-            no_output_timeout=self.no_progress_timeout,
-            heartbeat_interval=self.heartbeat_interval,
-            stdin_data=prompt
-        )
+        # [fork 2026-11-08] lean call: no built-in tools, only the MCP servers the allowed tools need
+        with claude_cli.lean_args(self.allowed_tools if use_tools else None) as lean:
+            if lean:
+                invocation_desc += " (lean)"
+            res = ProcessTreeRunner.run(
+                argv=cmd + lean,
+                cwd=cwd,
+                env=sanitized_env,
+                timeout=self.timeout,
+                no_output_timeout=self.no_progress_timeout,
+                heartbeat_interval=self.heartbeat_interval,
+                stdin_data=prompt
+            )
 
         self.last_execution_info = {
             "executable": self.executable,

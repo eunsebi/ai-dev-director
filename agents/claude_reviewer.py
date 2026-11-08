@@ -12,6 +12,7 @@ from typing import Dict, Any, Optional
 
 from core.env_utils import resolve_cli, get_sanitized_env
 from core.process_runner import ProcessTreeRunner
+from core import claude_cli
 from schemas.order import OrderSchema
 from schemas.review_result import ReviewResultSchema
 from schemas.provenance import AgentProvenanceRecord
@@ -161,7 +162,8 @@ class ClaudeReviewer:
         invocation_cmd = 'claude --print'
         self.logger.info(f"[Claude Reviewer] Invoking via ProcessTreeRunner: {self.executable} in {wt}")
 
-        cmd = [self.executable, "--print"]
+        # [fork 2026-11-08] lean call: read-only file tools only, no MCP servers/skills/hooks
+        cmd = [self.executable, "--print"] + claude_cli.static_args("Read,Grep,Glob")
         res = ProcessTreeRunner.run(
             argv=cmd,
             cwd=str(wt),

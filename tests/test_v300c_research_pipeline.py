@@ -275,7 +275,9 @@ def test_9_official_cli_commands_are_read_only_and_subscription_only():
     claude, claude_stdin, _ = runner._command("ANTHROPIC", "claude", "p")
     google, google_stdin, _ = runner._command("GOOGLE", "agy", "p")
     assert codex == ["codex", "exec", "--sandbox", "read-only", "-"] and codex_stdin == "p"
-    assert claude == ["claude", "--print", "--output-format", "json"] and claude_stdin == "p"
+    # fork 2026-11-08: lean call options (no MCP servers/skills/settings/tools) follow the official base command
+    assert claude[:4] == ["claude", "--print", "--output-format", "json"] and claude_stdin == "p"
+    assert claude[4:] in ([], ["--strict-mcp-config", "--disable-slash-commands", "--setting-sources", "", "--tools", ""])
     assert google == ["agy", "--input-format", "stream-json", "--output-format", "stream-json", "--sandbox"]
     google_message = json.loads(google_stdin)
     assert google_message["event"] == "user"

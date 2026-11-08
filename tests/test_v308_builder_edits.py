@@ -76,8 +76,10 @@ def test_large_writable_trees_are_ranked_and_overflow_is_listed_by_path(tmp_path
     builder.run(order, str(tmp_path))
     info = builder.last_execution_info
     assert info["context_files"][:2] == ["backend/vision_lmstudio.py", "backend/tests/test_vision_lmstudio.py"]
-    assert "NAMED-TEST-MARKER" in seen["prompt"] and info["omitted_files"]
-    assert "WRITABLE FILES NOT SHOWN" in seen["prompt"] and info["omitted_files"][0] in seen["prompt"]
+    # fork 2026-11-08: unnamed writable files are listed by path only ("OTHER FILES IN SCOPE"), not sent in full
+    assert "NAMED-TEST-MARKER" in seen["prompt"]
+    listed = seen["prompt"].split("OTHER FILES IN SCOPE", 1)[1]
+    assert all(f"backend/tests/test_big_{i}.py" in listed for i in range(6)) and "t" * 1000 not in seen["prompt"]
     assert info["prompt_chars"] < 200_000
 
 

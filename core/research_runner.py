@@ -62,7 +62,10 @@ class TriadResearchRunner:
             # Windows where synthesis/cross-critique evidence can exceed CreateProcess' command-line limit.
             return [executable, "exec", "--sandbox", "read-only", "-"], prompt, "codex exec --sandbox read-only - <stdin>"
         if domain == "ANTHROPIC":
-            return [executable, "--print", "--output-format", "json"], prompt, "claude --print --output-format json"
+            from core import claude_cli      # [fork 2026-11-08] lean call: the Builder gets no tools/MCP servers
+            lean = claude_cli.static_args("")
+            return ([executable, "--print", "--output-format", "json"] + lean, prompt,
+                    "claude --print --output-format json" + (" (lean)" if lean else ""))
         if domain == "GOOGLE":
             # Official AGY stream-json mode reads NDJSON from stdin. This avoids Windows command-line limits
             # without file-read tools or permission bypasses, and exposes an explicit final result event.
@@ -198,6 +201,10 @@ class TriadResearchRunner:
             except ResearchProviderCallError as exc:
                 if stage == 'BUILDING' and str(exc).startswith('GOOGLE_STREAM_FAILED:') and 'output token limit' in str(exc).lower():
                     exc.retryable = True
+                if stage == 'BUILDING' and ErrorCategory.classify(str(exc)) == ErrorCategory.TIMEOUT:
+                    # [fork 2026-11-08] the same prompt to the same provider just burns another full timeout
+                    # (up to 10 min each); the Director's Builder stage swaps the provider instead.
+                    exc.retryable = False
                 record = dict(exc.meta)
                 record.update({
                     "attempt_number": attempt_number, "outcome": "FAILED",

@@ -181,3 +181,27 @@ Known unrelated on this Mac: `test_v020_provider_ops.py` needs `requests` (colle
   - Builder가 참고로 읽는 파일 종류에 `.swift`·`.kt`·`.go`·`.rs` 등을 추가했다. 예전에는 허용 범위 밖의 Swift 파일이 Builder에게 보이지 않았다.
   - 기존 버그: `_dirty_state()`는 `_run_git`이 strip한 첫 줄을 `line[3:]`로 잘라서 파일 이름의 첫 글자를 잃었다(`feature.py` → `eature.py`).
 - **테스트**: `tests/test_fork_repair_speed.py`(17개). `test_v303`의 always_wrong 경우는 빌드 횟수 기대값을 3에서 2로 바꿨다(진전 없음 중단).
+
+## 토큰·대기 줄이기: 가벼운 Claude 호출, Builder 시간 초과 재시도 중단, 첫 코딩 프롬프트 좁히기 (2026-11-08)
+- **배경**: 2026-11-01~08 사용량 장부를 점검했다.
+  - Antigravity Builder는 43번 중 28번이 시간 초과로, 163분을 썼다.
+  - Claude HEAD는 보낸 글자 수보다 토큰을 몇 배씩 썼다(판정 6.8만 자 → 70만 토큰, 계획 1.4만 자 → 14만 토큰).
+  - 첫 Builder 프롬프트는 15만~21만 자였다.
+- **가벼운 Claude 호출** (`core/claude_cli.py`)
+  - Director가 부르는 `claude --print`에 `--strict-mcp-config --disable-slash-commands --setting-sources "" --tools <...>`를 붙인다.
+  - 효과: 사용자가 등록한 MCP 서버 전부(도구 정의 수백 개), 스킬, iTerm 훅, CLAUDE.md의 "먼저 메모리를 읽어라" 같은 지시를 따르는 여러 턴 탐색이 사라진다. Haiku 한 줄 기준으로 기본 실려 가는 양이 3.8만 토큰에서 4천 토큰으로 줄었다.
+  - HEAD 계획·대화(`use_tools`)에는 allowed_tools가 가리키는 MCP 서버(공유 메모리)만 담은 임시 `--mcp-config`를 넘긴다. 값은 `~/.claude.json`에서 복사하고, 파일은 0600으로 만들어 호출이 끝나면 지운다. 실측: 메모리를 읽는 호출이 2턴, 1.4만 토큰.
+  - 도구 설정: HEAD 판정·Builder는 도구 없음, Claude Reviewer는 `Read,Grep,Glob`만.
+  - 끄는 법: `claude_cli.lean: false` 또는 `DIRECTOR_CLAUDE_LEAN=0`. 구독 한도 확인 호출은 원래 가볍게 부르고 있었다.
+- **Builder 시간 초과 재시도 중단** (`core/research_runner.py`): BUILDING 단계의 TIMEOUT은 같은 프롬프트로 다시 보내지 않는다(예전에는 최대 2×600초). 이제 Director가 바로 다른 제공자로 넘긴다. 다른 단계의 1회 재시도는 그대로다.
+- **첫 코딩 프롬프트** (`agents/proposal_builder.py`)
+  - 전문을 보내는 파일
+    - ORDER(목표·context·수용 기준)가 경로나 파일 이름을 댄 파일
+    - 허용 범위 패턴 하나에 4개 이하로 걸리는 파일
+  - 관련 파일(4만 자 안에서)
+    - 위 파일들과 ORDER가 CamelCase 타입 이름으로 쓰는 파일
+    - 이름이 나온 참고 문서
+  - 나머지는 "OTHER FILES IN SCOPE"로 경로만 알린다. 이름이 나온 파일이 없으면 예전처럼 보낸다.
+  - 프롬프트에서 늘 빼는 것: 바이너리, `.xcassets`·`.xcodeproj` 등 번들 폴더, 잠금 파일, CLAUDE.md·AGENTS.md·GEMINI.md(서버 주소 같은 비밀 정보가 다른 제공자로 가지 않게)
+  - F2 기준 첫 코딩 프롬프트가 21.2만 자에서 10.9만 자로 줄었다. 지난번 실패 원인인 `RootTabView.swift`가 처음부터 들어간다.
+- **테스트**: `tests/test_fork_lean_calls.py`(14개). 바뀐 동작에 맞춰 `test_v300c` 9(Claude 명령에 옵션이 붙음)와 `test_v308`(넘치는 파일은 경로 목록으로)의 기대값을 갱신했다.
