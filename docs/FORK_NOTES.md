@@ -205,3 +205,9 @@ Known unrelated on this Mac: `test_v020_provider_ops.py` needs `requests` (colle
   - 프롬프트에서 늘 빼는 것: 바이너리, `.xcassets`·`.xcodeproj` 등 번들 폴더, 잠금 파일, CLAUDE.md·AGENTS.md·GEMINI.md(서버 주소 같은 비밀 정보가 다른 제공자로 가지 않게)
   - F2 기준 첫 코딩 프롬프트가 21.2만 자에서 10.9만 자로 줄었다. 지난번 실패 원인인 `RootTabView.swift`가 처음부터 들어간다.
 - **테스트**: `tests/test_fork_lean_calls.py`(14개). 바뀐 동작에 맞춰 `test_v300c` 9(Claude 명령에 옵션이 붙음)와 `test_v308`(넘치는 파일은 경로 목록으로)의 기대값을 갱신했다.
+
+## DB 연결 닫기: 오래 켜 둔 서버가 빈 응답을 보내던 문제 (2026-11-09)
+- **증상**: companion 서버를 12시간쯤 켜 두자 대시보드 첫 화면과 CSS 요청에 빈 응답이 왔다(파일을 읽지 않는 404 경로는 응답했다). 서버는 `data/director.db`를 247번 연 채로 있었고, 열린 파일이 295개로 프로세스 한도 256개를 넘었다.
+- **원인**: 모든 DB 접근이 `with sqlite3.connect(...) as conn:` 형태였다. 이 형태는 트랜잭션만 끝내고 연결은 닫지 않는다. Python 3.14에서는 연결이 순환 참조로 남아 GC가 돌 때까지 파일 핸들이 열려 있다(GC를 끄고 20번 부르면 20개가 남는다).
+- **수정** (`core/db_path.py`): `ClosingConnection`과 `connect(path, **kw)`를 추가했다. `with` 블록이 끝나면 커밋(오류면 롤백)한 뒤 연결을 닫고, 결과는 `sqlite3.Row`로 돌려준다. 연결을 만드는 7곳(state_machine, chat_manager, provider_manager, research_state, usage, solomon_bridge, dashboard_server)이 모두 이 함수를 쓴다.
+- **테스트**: `tests/test_fork_db_close.py`(2개). 블록이 끝나면 닫히는지, 오류 때 롤백하는지, GC를 꺼 둔 채 60번 불러도 핸들이 남지 않는지 확인한다.

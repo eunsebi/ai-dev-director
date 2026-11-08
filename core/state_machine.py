@@ -1,4 +1,5 @@
 import sqlite3
+from core.db_path import connect as closing_connect
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -45,8 +46,7 @@ class StateMachine:
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path))
-        conn.row_factory = sqlite3.Row
+        conn = closing_connect(self.db_path)
         return conn
 
     def _init_db(self) -> None:

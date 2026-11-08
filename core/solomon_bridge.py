@@ -3,6 +3,7 @@ import hashlib
 import json
 import re
 import sqlite3
+from core.db_path import connect as closing_connect
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -20,8 +21,7 @@ class SolomonBridge:
                 error TEXT)''')
 
     def connect(self):
-        db = sqlite3.connect(str(self.d.resolve_db_path()), timeout=15)
-        db.row_factory = sqlite3.Row
+        db = closing_connect(self.d.resolve_db_path(), timeout=15)
         return db
 
     def list(self):

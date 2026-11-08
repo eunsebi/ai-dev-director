@@ -1,4 +1,5 @@
 import sqlite3
+from core.db_path import connect as closing_connect
 import json
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
@@ -161,8 +162,7 @@ def resolve_db_path() -> Path:
 
 
 def get_db_conn():
-    conn = sqlite3.connect(str(resolve_db_path()))
-    conn.row_factory = sqlite3.Row
+    conn = closing_connect(resolve_db_path())
     return conn
 
 
