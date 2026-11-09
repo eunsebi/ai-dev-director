@@ -242,3 +242,14 @@ Known unrelated on this Mac: `test_v020_provider_ops.py` needs `requests` (colle
   - 기록: HEAD Claude(`claude --print`, 가벼운 호출)에 이 호출에서만 `memory_append`를 더 연다. 허용 도구는 HEAD의 메모리 읽기 도구 + `memory_read`·`memory_append` + `Read/Edit(./CLAUDE.md)`이고, `memory_write`·`memory_delete`·Bash·Write는 막는다. 호출 뒤 git 추적 파일이 바뀌었거나 CLAUDE.md의 `## 작업 현황 (handoff)` 섹션 밖이 바뀌었으면 실패로 보고 CLAUDE.md를 되돌린다.
 - **대시보드**: 스테이지 결과물 카드에 단계 목록(○ 대기 · ◐ 진행 · ✓ 통과 · ⚠ 확인 필요 · ✕ 실패 · ⏳ 사용자 확인 · – 건너뜀)과 실패 사유·⚠ 보고·건너뛴 이유를 보여 준다. 사용자 확인 단계에서는 [통과]/[실패] 버튼이 나오고, [실패]에 적은 내용이 HEAD 재작업에 그대로 전달된다. 진행 상태는 미션 JSON의 `delivery`에 있어 서버를 다시 켜도 사용자 확인 대기가 남는다.
 - **테스트**: `tests/test_fork_apply_pipeline.py`(6개, stash에서 되살림), `tests/test_fork_apply_pipeline_ext.py`(새 단계).
+
+## 실패 원인 창을 한국어로 (2026-11-09)
+- **증상**: 「실패 원인」 창의 작업 단계 실패 내용이 영어였다("Final decision: Overridden by Orchestrator: Reviewer reported existing behavior loss or P1 concerns: …"). 게다가 Director가 PASS를 뒤집을 때 리뷰어의 **요약**만 적어서, 정작 어떤 P1 지적 때문에 불합격인지 보이지 않았다(요약은 "요청한 세 가지는 반영됨"처럼 통과처럼 읽혔다).
+- **새 판정부터**
+  - 리뷰어(Claude·Codex·Antigravity) 프롬프트에 `REVIEW_LANGUAGE_RULE`: p0/p1/p2 항목과 summary를 한국어로 쓴다(코드 이름·경로·테스트 이름·오류 메시지는 그대로, JSON 키와 verdict 값은 영어).
+  - HEAD 최종 판정(Claude·Codex) 프롬프트에 `DECISION_LANGUAGE_RULE`: rationale과 next_steps를 한국어로 쓴다(맨 앞 `USER_DECISION:` 표시는 영어 유지 — 자동 판정이 이 표시를 본다).
+  - Director가 PASS를 뒤집는 이유를 한국어로 쓰고, 리뷰어 요약 대신 실제 지적을 적는다: `P1(꼭 고칠 문제): …` / `삭제 관련 지적: …` / `P2(작은 문제): …` / `리뷰어 요약: …`.
+  - 삭제 경고 판별(`_mentions_deletion`)이 영어 remove/delet와 함께 한국어(삭제·제거·지워·없앴·사라 등)도 본다. 리뷰어가 한국어로 써도 기존 동작 삭제 지적이 PASS를 막는다.
+  - 상태 기록의 맨 앞 "Final decision:"과 "P2 FOLLOW-UPS"는 그대로 둔다(분류·테스트가 이 표시를 쓴다).
+- **이전 기록**: `failure_reason.to_korean()`이 Director가 붙이는 고정 문구(최종 판정, 판정 뒤집음, P0/P1 보고, 사용자 결정 필요, 구현 AI 실패, 빌드 통과 등)를 화면에 보일 때 한국어로 바꾼다. AI가 쓴 영어 문장은 그대로 두고, 그런 기록에는 "AI가 영어로 남긴 기록입니다" 안내를 붙인다(`classify_step` → `detail_ko`, `english`).
+- **테스트**: `tests/test_fork_korean_failures.py`(5개).

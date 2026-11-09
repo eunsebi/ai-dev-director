@@ -1,6 +1,7 @@
 """Antigravity planning/review using the shared isolated official CLI runner."""
 import json
 import tempfile
+from core.failure_reason import REVIEW_LANGUAGE_RULE
 from agents.claude_head import ClaudeHead
 from core.bootstrap import prepare_project
 from core.env_utils import resolve_cli
@@ -39,6 +40,7 @@ class GoogleReviewer(GoogleHead):
                   'Never claim tests were run by you. Identify concrete defects and requirement violations. '
                   'File-count and diff-size limits are enforced by the Director: never report them. '
                   'Return only JSON: {"verdict":"pass or changes_required","p0":[],"p1":[],"p2":[],"summary":"..."}.\n'
+                  + REVIEW_LANGUAGE_RULE
                   + json.dumps({'order':order.model_dump(), 'diff':git_diff,
                                 'verification':{k:v for k,v in verification.items() if k != 'git_diff'}}, ensure_ascii=False))
         return ReviewResultSchema(**self._extract_json(self._invoke_cli(prompt)))

@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+from core.failure_reason import REVIEW_LANGUAGE_RULE
 import re
 import time
 import shutil
@@ -146,6 +147,7 @@ class ClaudeReviewer:
             f"BUILD ERRORS (compiler lines from the Director's own build; empty = none): "
             f"{json.dumps(verification.get('build_errors') or [], ensure_ascii=False)}\n\n"
             f"GIT DIFF:\n```diff\n{git_diff}\n```\n\n"
+            + REVIEW_LANGUAGE_RULE +   # fork 2026-11-09: Korean prose for the operator
             "FORMATTING MANDATE:\n"
             "Your output MUST contain ONLY a JSON code block formatted as:\n"
             "```json\n"

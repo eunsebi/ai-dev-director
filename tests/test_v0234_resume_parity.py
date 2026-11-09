@@ -275,7 +275,7 @@ def test_i_resume_reviewer_verdict_gate(isolate_provider_db):
         orch._save_json(run_id, "review.json", {"verdict": "changes_required", "p0": [], "p1": [], "p2": ["issue"], "summary": "minor"})
         summary = orch.resume(run_id)
     assert summary["final_state"] == State.HUMAN_REQUIRED
-    assert "not 'pass'" in summary["decision"]["rationale"]
+    assert "리뷰어 판정이 통과가 아님('changes_required')" in summary["decision"]["rationale"]   # fork 2026-11-09: Korean
 
 
 # ------------------------------------------------------------------ TEST J/K/L/M: settings restore & recovery

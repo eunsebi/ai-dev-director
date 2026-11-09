@@ -24,6 +24,13 @@ from schemas.builder_result import BuilderResultSchema
 from schemas.review_result import ReviewResultSchema
 from schemas.decision import DecisionSchema
 
+
+
+def _mentions_deletion(text: str) -> bool:
+    """A review finding about removed behaviour. Reviewers write Korean since 2026-11-09, so both languages count."""
+    low = (text or "").lower()
+    return any(w in low for w in ("remove", "delet", "삭제", "제거", "지워", "지웠", "없앴", "없어졌", "사라"))
+
 class Orchestrator:
     """
     Central Controller for AI DEV DIRECTOR.
@@ -1061,20 +1068,36 @@ class Orchestrator:
         self.sm.log_audit(run_id, "ORCHESTRATOR", "DECISION_FALLBACK", decision.rationale)
         return decision, None
 
+    @staticmethod
+    def _review_findings_ko(review_result) -> str:
+        """fork 2026-11-09: the reviewer's actual findings (not only its summary) for the 실패 원인 panel."""
+        parts = []
+        if review_result.p1:
+            parts.append("P1(꼭 고칠 문제): " + "; ".join(review_result.p1))
+        deletions = [s for s in (review_result.p1 + review_result.p2) if _mentions_deletion(s) and s not in review_result.p1]
+        if deletions:
+            parts.append("삭제 관련 지적: " + "; ".join(deletions))
+        if review_result.p2:
+            parts.append("P2(작은 문제): " + "; ".join(review_result.p2))
+        if review_result.summary:
+            parts.append("리뷰어 요약: " + review_result.summary)
+        return " / ".join(parts)[:3000]
+
     def apply_final_pass_gate(self, decision: DecisionSchema, review_result: ReviewResultSchema, logger: logging.Logger) -> str:
         """Orchestrator-level strict PASS rules (identical for run and resume). Mutates decision; returns final state.
         PASS survives only when: no P0, reviewer verdict == 'pass', no P1/deletion warning, HEAD and REVIEWER are
         independent (not both Claude / same agent family)."""
         reviewer_has_p0 = len(review_result.p0) > 0
         reviewer_has_p1 = len(review_result.p1) > 0
-        has_deletion_warning = any("remove" in s.lower() or "delet" in s.lower() for s in (review_result.p1 + review_result.p2))
+        has_deletion_warning = any(_mentions_deletion(s) for s in (review_result.p1 + review_result.p2))
         final_state = decision.decision
         if final_state != State.PASS:
             return final_state
         if reviewer_has_p0:
             logger.warning("Overriding Head PASS to FAIL due to Reviewer P0 blocker")
             decision.decision = "FAIL"
-            decision.rationale = f"Overridden by Orchestrator: Reviewer reported P0 blocker: {'; '.join(review_result.p0)}"
+            decision.rationale = ("Director가 HEAD의 PASS를 뒤집음 · 리뷰어가 P0(치명적 문제)를 보고함: "
+                                  + "; ".join(review_result.p0))
             return State.FAIL
         # HEAD proxy: unresolved review findings after the repair budget are a FAIL the mission re-plans from,
         # not a question for the user.
@@ -1087,12 +1110,14 @@ class Orchestrator:
         elif getattr(review_result, "verdict", None) != "pass":
             logger.warning(f"Overriding Head PASS to {blocked_state}: reviewer verdict is {getattr(review_result, 'verdict', None)!r}, not 'pass'")
             decision.decision = blocked_state
-            decision.rationale = f"Overridden by Orchestrator: reviewer verdict {getattr(review_result, 'verdict', None)!r} is not 'pass' ({review_result.summary})"
+            decision.rationale = (f"Director가 HEAD의 PASS를 뒤집음 · 리뷰어 판정이 통과가 아님"
+                                  f"({getattr(review_result, 'verdict', None)!r}). " + self._review_findings_ko(review_result))
             return blocked_state
         if reviewer_has_p1 or has_deletion_warning:
             logger.warning(f"Overriding Head PASS to {blocked_state} due to existing behavior loss or P1 issue")
             decision.decision = blocked_state
-            decision.rationale = f"Overridden by Orchestrator: Reviewer reported existing behavior loss or P1 concerns: {review_result.summary}"
+            decision.rationale = ("Director가 HEAD의 PASS를 뒤집음 · 리뷰어가 기존 동작 손실 또는 P1(꼭 고칠 문제)을 보고함. "
+                                  + self._review_findings_ko(review_result))
             return blocked_state
         head_prov = getattr(self.head, "provider", "").lower()
         rev_prov = getattr(self.reviewer, "provider", "").lower()
@@ -1349,7 +1374,7 @@ class Orchestrator:
                 logger.warning(msg)
                 self.sm.log_audit(run_id, "ORCHESTRATOR", "FINAL_GATE_BLOCK", msg)
                 decision.decision = "HUMAN_REQUIRED"
-                decision.rationale = f"Overridden by Orchestrator: {msg}"
+                decision.rationale = f"Director가 HEAD 판정을 뒤집음 · {msg}"
                 final_state = State.HUMAN_REQUIRED
         self._save_json(run_id, "decision.json", decision)
         self.sm.log_audit(run_id, "HEAD", "FINAL_DECISION", json.dumps(decision.model_dump()))

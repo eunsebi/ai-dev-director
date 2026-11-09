@@ -5,6 +5,7 @@ import re
 import time
 import subprocess
 import logging
+from core.failure_reason import DECISION_LANGUAGE_RULE
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional
@@ -232,6 +233,7 @@ class CodexHead(BaseHead):
             "3. 'FAIL': Implementation is incomplete or tests/review found defects. Give concrete developer repair instructions in next_steps.\n"
             "Routine implementation architecture, input contracts and fixable review findings are YOUR decisions: resolve them and direct the Builder. Do not ask the user.\n"
             "An ORDER that cannot be met as written (conflicting acceptance criteria, a needed file outside allowed_paths or in protected_paths, a broken test fixture) is NOT a user decision: return FAIL, name the conflict and the scope change needed; the mission planner re-plans.\n\n"
+            + DECISION_LANGUAGE_RULE +   # fork 2026-11-09: Korean prose for the operator
             "Before issuing repairs, cross-check every instruction against the ORIGINAL acceptance criteria. Never solve one defect by contradicting an existing requirement.\n"
             "SCHEMA SPECIFICATION:\n"
             "{\n"

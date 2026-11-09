@@ -259,7 +259,7 @@ def test_e_reviewer_verdict_gate(isolate_provider_db):
         summary = orch.run(proj, "g", builder_fn=b, order=OrderSchema(goal="g", allowed_paths=["src/"]))
     assert summary["final_state"] != State.PASS
     assert summary["final_state"] == State.HUMAN_REQUIRED
-    assert "not 'pass'" in summary["decision"]["rationale"]
+    assert "리뷰어 판정이 통과가 아님('changes_required')" in summary["decision"]["rationale"]   # fork 2026-11-09: Korean
 
     # malformed verdicts are rejected by the schema itself
     with pytest.raises(Exception):

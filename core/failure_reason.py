@@ -184,5 +184,61 @@ def classify_step(to_state: str, details: str = "") -> Dict[str, Any]:
     label, hint = STEP_REASONS[code]
     if cause and cause["code"] not in ("EXIT", "UNKNOWN"):
         label, hint = f"{label} · {cause['label']}", cause["hint"]
-    return {"code": code, "label": label, "hint": hint, "detail": details[:600],
-            "cause": cause["code"] if cause else None}
+    ko = to_korean(details)
+    return {"code": code, "label": label, "hint": hint, "detail": details[:600], "detail_ko": ko[:1200],
+            "english": mostly_english(_without_fixed(details)), "cause": cause["code"] if cause else None}
+
+
+# ------------------------------------------------------------------ Korean wording (fork 2026-11-09)
+# The 실패 원인 panel showed the Reviewer's and HEAD's English sentences as they were. New runs ask them to write
+# their prose in Korean (these rules go into the prompts); records written before that, and the fixed phrases the
+# Director itself adds, are translated here for display.
+REVIEW_LANGUAGE_RULE = (
+    "LANGUAGE: write every p0/p1/p2 item and the summary in Korean (한국어), plainly, so a non-programmer can follow "
+    "what is wrong and why. Keep code identifiers, file paths, test names and error messages as they are. "
+    "JSON keys and the verdict values stay in English.\n")
+DECISION_LANGUAGE_RULE = (
+    "LANGUAGE: write the rationale and every next_steps item in Korean (한국어). Keep code identifiers, file paths "
+    "and test names as they are; keep the decision values and a leading USER_DECISION: marker in English.\n")
+
+_KO_PHRASES = [
+    (r"Final decision:\s*", "최종 판정: "),
+    (r"Overridden by Orchestrator:\s*", "Director가 HEAD 판정을 뒤집음 · "),
+    (r"Reviewer reported existing behavior loss or P1 concerns:\s*",
+     "리뷰어가 기존 동작 손실 또는 P1(꼭 고칠 문제)을 보고함. 리뷰어 요약: "),
+    (r"Reviewer reported P0 blocker:\s*", "리뷰어가 P0(치명적 문제)를 보고함: "),
+    (r"reviewer verdict '([\w-]+)' is not 'pass'\s*", r"리뷰어 판정이 통과가 아님('\1') "),
+    (r"\[P2 FOLLOW-UPS:\s*", "[P2 후속 과제: "),
+    (r"FINAL_GATE: PASS refused, evidence incomplete or invalid:\s*", "최종 관문: 증거가 부족하거나 맞지 않아 PASS 거부: "),
+    (r"USER_DECISION:\s*", "사용자 결정 필요: "),
+    (r"Builder failed( to [^:]*)?:?\s*", "구현 AI 실패: "),
+    (r"REVIEWER_EXECUTION_FAILURE:\s*", "리뷰어 실행 실패: "),
+    (r"Unparseable review output", "리뷰 결과를 읽을 수 없음"),
+    (r"Verification failed:\s*", "검증 실패: "),
+    (r"\bbuild passed\b", "빌드 통과"),
+    (r"\bno tests configured\b", "설정된 테스트 없음"),
+    (r"REPAIR_NO_PROGRESS:?\s*", "고치기 진전 없음: "),
+    (r"No usable provider", "쓸 수 있는 AI 없음"),
+]
+
+
+def to_korean(text: str) -> str:
+    """Translate the Director's own fixed English phrases; free text stays as written."""
+    out = text or ""
+    for pattern, repl in _KO_PHRASES:
+        out = re.sub(pattern, repl, out)
+    return out
+
+
+def _without_fixed(text: str) -> str:
+    out = text or ""
+    for pattern, _ in _KO_PHRASES:
+        out = re.sub(pattern, " ", out)
+    return out
+
+
+def mostly_english(text: str) -> bool:
+    """True when the free text is still English (written before the Korean rule, or the AI ignored it)."""
+    letters = re.findall(r"[A-Za-z]", text or "")
+    hangul = re.findall(r"[\uac00-\ud7a3]", text or "")
+    return len(letters) > 40 and len(hangul) * 4 < len(letters)

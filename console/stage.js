@@ -371,7 +371,10 @@ function openFailPanel(){
   box.append(head);
   if((f.steps||[]).length){box.append(el('h4','작업 단계 실패'));const ol=el('ol','','fail-list');
     for(const s of f.steps){const li=el('li');li.append(el('b',s.reason_label||s.state_ko),el('time',ago(utc(s.at))+' · '+(s.project||'')),
-      el('p',s.reason_hint||'','hint'),el('pre',s.details||''));ol.append(li);}box.append(ol);}
+      el('p',s.reason_hint||'','hint'),el('pre',s.reason_detail_ko||s.details||''));
+      // fork 2026-11-09: records from before the Korean rule keep the AI's English sentences
+      if(s.reason_english)li.append(el('small','AI가 영어로 남긴 기록입니다(2026-11-09 이후 판정은 한국어로 씁니다).','hint'));
+      ol.append(li);}box.append(ol);}
   if((f.items||[]).length){box.append(el('h4','AI 호출 실패'));const ol=el('ol','','fail-list');
     for(const c of f.items){const li=el('li');li.style.setProperty('--c',(AI[c.provider]||{}).css||'#8fa0bd');
       li.append(el('b',(c.provider_name||c.provider)+' '+(c.role||'')+' · '+c.reason),el('time',ago(utc(c.at))+' · '+span(c.seconds)),
