@@ -20,3 +20,8 @@ class ReviewResultSchema(BaseModel):
         description="Minor improvements, style nitpicks, or suggestions"
     )
     summary: str = Field(..., description="Summary of the code review")
+    # fork 2026-11-10: an explicit flag instead of guessing from words like "removed" in any finding
+    forbidden_deletions: List[str] = Field(
+        default_factory=list,
+        description="Existing functions, classes, tests or behaviour removed WITHOUT permission in allowed_deletions"
+    )

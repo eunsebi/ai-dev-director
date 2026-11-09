@@ -253,3 +253,12 @@ Known unrelated on this Mac: `test_v020_provider_ops.py` needs `requests` (colle
   - 상태 기록의 맨 앞 "Final decision:"과 "P2 FOLLOW-UPS"는 그대로 둔다(분류·테스트가 이 표시를 쓴다).
 - **이전 기록**: `failure_reason.to_korean()`이 Director가 붙이는 고정 문구(최종 판정, 판정 뒤집음, P0/P1 보고, 사용자 결정 필요, 구현 AI 실패, 빌드 통과 등)를 화면에 보일 때 한국어로 바꾼다. AI가 쓴 영어 문장은 그대로 두고, 그런 기록에는 "AI가 영어로 남긴 기록입니다" 안내를 붙인다(`classify_step` → `detail_ko`, `english`).
 - **테스트**: `tests/test_fork_korean_failures.py`(5개).
+
+## P2 지적이 PASS를 FAIL로 뒤집던 판정 버그 (2026-11-10)
+- **증상**: 어디야 F11 미션 MSN-261109224303(6단계)에서 1·2·4단계가 빌드 PASS, 리뷰어 verdict 'pass'(p0·p1 없음), HEAD PASS인데도 FAIL이 됐다. HEAD가 사소한 P2 지적을 고치는 단계를 계속 만들어 단계 예산 6을 거의 다 썼다.
+- **원인**: `apply_final_pass_gate`의 삭제 경고가 P1·P2 문장에 "remove"/"delet" 글자가 있는지만 봤다. "`intro` was removed … so it is not a forbidden deletion" 같은 P2 메모, `removePersistentDomain` 같은 함수 이름도 삭제 경고가 됐다(2026-11-09 한국어화 때 한국어 단어까지 넣어 더 넓어졌던 것도 함께 되돌림).
+- **수정**
+  - 리뷰 스키마에 `forbidden_deletions: string[]`(기본 빈 목록, 예전 review.json도 그대로 읽힘)를 두고, 리뷰어 프롬프트(Claude·Codex·Antigravity)가 "ALLOWED DELETIONS 허락 없이 지운 기존 함수·클래스·테스트·동작만" 적게 한다. 삭제 경고는 이 목록이 비어 있지 않을 때만 켜진다. P0/P1 지적은 예전처럼 그 자체로 PASS를 막는다.
+  - 리뷰가 pass이고 P2만 있으면 판정을 바꾸지 않고 `[P2 FOLLOW-UPS: …]`로 기록만 한다.
+  - 판정 뒤집기 이유의 "삭제 관련 지적"은 "허락 없이 지운 것"(forbidden_deletions)으로 바꿨다.
+- **테스트**: `tests/test_fork_p2_gate.py`(F11 1단계 review.json 형태에서 PASS 유지 등 5개), `test_fork_korean_failures.py`의 삭제 테스트를 플래그 기준으로 갱신.

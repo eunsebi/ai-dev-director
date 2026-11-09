@@ -155,8 +155,12 @@ class CodexReviewer:
             '  "p0": string[],\n'
             '  "p1": string[],\n'
             '  "p2": string[],\n'
-            '  "summary": string\n'
+            '  "summary": string,\n'
+            '  "forbidden_deletions": string[]\n'
             "}\n"
+            "forbidden_deletions: list ONLY existing functions, classes, tests or user-visible behaviour that were removed "
+            "WITHOUT permission in ALLOWED DELETIONS (also report each as P0 or P1). Leave it empty for a replacement or "
+            "removal the ORDER asks for or allows; never use it for minor notes.\n"
             "```"
         )
 

@@ -39,7 +39,9 @@ class GoogleReviewer(GoogleHead):
         prompt = ('Independently review the ORDER against the code diff and test evidence. '
                   'Never claim tests were run by you. Identify concrete defects and requirement violations. '
                   'File-count and diff-size limits are enforced by the Director: never report them. '
-                  'Return only JSON: {"verdict":"pass or changes_required","p0":[],"p1":[],"p2":[],"summary":"..."}.\n'
+                  'Return only JSON: {"verdict":"pass or changes_required","p0":[],"p1":[],"p2":[],"summary":"...","forbidden_deletions":[]}. '
+                  'forbidden_deletions lists only existing functions/tests/behaviour removed without permission in '
+                  'allowed_deletions (also report them as P0/P1); empty for removals the ORDER asks for or allows.\n'
                   + REVIEW_LANGUAGE_RULE
                   + json.dumps({'order':order.model_dump(), 'diff':git_diff,
                                 'verification':{k:v for k,v in verification.items() if k != 'git_diff'}}, ensure_ascii=False))

@@ -26,11 +26,6 @@ from schemas.decision import DecisionSchema
 
 
 
-def _mentions_deletion(text: str) -> bool:
-    """A review finding about removed behaviour. Reviewers write Korean since 2026-11-09, so both languages count."""
-    low = (text or "").lower()
-    return any(w in low for w in ("remove", "delet", "삭제", "제거", "지워", "지웠", "없앴", "없어졌", "사라"))
-
 class Orchestrator:
     """
     Central Controller for AI DEV DIRECTOR.
@@ -1074,9 +1069,9 @@ class Orchestrator:
         parts = []
         if review_result.p1:
             parts.append("P1(꼭 고칠 문제): " + "; ".join(review_result.p1))
-        deletions = [s for s in (review_result.p1 + review_result.p2) if _mentions_deletion(s) and s not in review_result.p1]
+        deletions = list(getattr(review_result, "forbidden_deletions", None) or [])
         if deletions:
-            parts.append("삭제 관련 지적: " + "; ".join(deletions))
+            parts.append("허락 없이 지운 것: " + "; ".join(deletions))
         if review_result.p2:
             parts.append("P2(작은 문제): " + "; ".join(review_result.p2))
         if review_result.summary:
@@ -1089,7 +1084,10 @@ class Orchestrator:
         independent (not both Claude / same agent family)."""
         reviewer_has_p0 = len(review_result.p0) > 0
         reviewer_has_p1 = len(review_result.p1) > 0
-        has_deletion_warning = any(_mentions_deletion(s) for s in (review_result.p1 + review_result.p2))
+        # fork 2026-11-10: a deletion blocks PASS only when the reviewer flags it as forbidden (or raises it as P0/P1,
+        # which blocks anyway). The word "removed" inside a P2 note is not a deletion warning: F11 (MSN-261109224303)
+        # lost 3 of 6 milestones to P2 notes such as "`intro` was removed ... so it is not a forbidden deletion".
+        has_deletion_warning = bool(getattr(review_result, "forbidden_deletions", None))
         final_state = decision.decision
         if final_state != State.PASS:
             return final_state
@@ -1113,6 +1111,10 @@ class Orchestrator:
             decision.rationale = (f"Director가 HEAD의 PASS를 뒤집음 · 리뷰어 판정이 통과가 아님"
                                   f"({getattr(review_result, 'verdict', None)!r}). " + self._review_findings_ko(review_result))
             return blocked_state
+        if (getattr(review_result, "verdict", None) == "pass" and not reviewer_has_p1 and not has_deletion_warning
+                and review_result.p2 and "[P2 FOLLOW-UPS:" not in (decision.rationale or "")):
+            # minor notes on a passing review are follow-ups, never a reason to overturn PASS
+            decision.rationale = (decision.rationale or "") + " [P2 FOLLOW-UPS: " + "; ".join(review_result.p2)[:1500] + "]"
         if reviewer_has_p1 or has_deletion_warning:
             logger.warning(f"Overriding Head PASS to {blocked_state} due to existing behavior loss or P1 issue")
             decision.decision = blocked_state

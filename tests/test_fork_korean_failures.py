@@ -49,12 +49,12 @@ def test_override_rationale_is_korean_and_names_the_findings():
     assert d2.rationale == "Director가 HEAD의 PASS를 뒤집음 · 리뷰어가 P0(치명적 문제)를 보고함: 빌드 깨짐"
 
 
-def test_korean_deletion_finding_still_blocks_pass():
+def test_flagged_forbidden_deletion_blocks_pass():
     orch = proxy_orch()
     d = DecisionSchema(decision="PASS", rationale="ok", next_steps=[])
-    review = ReviewResultSchema(verdict="pass", p2=["기존 OnboardingView의 로고가 삭제됨"], summary="s")
+    review = ReviewResultSchema(verdict="pass", forbidden_deletions=["기존 OnboardingView의 로고 화면"], summary="s")
     assert orch.apply_final_pass_gate(d, review, logging.getLogger("t")) == State.FAIL
-    assert "삭제 관련 지적: 기존 OnboardingView의 로고가 삭제됨" in d.rationale
+    assert "허락 없이 지운 것: 기존 OnboardingView의 로고 화면" in d.rationale
 
 
 def test_prompts_ask_for_korean():
