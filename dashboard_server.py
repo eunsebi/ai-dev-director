@@ -637,6 +637,39 @@ def _result_manager() -> ResultManager:
     return ResultManager(config=load_config())
 
 
+def project_pipeline(config: dict, project_path: str):
+    """fork 2026-11-07: the project's `apply_pipeline` block (None = plain apply)."""
+    from core.apply_pipeline import project_pipeline as _pp
+    return _pp(config, project_path)
+
+
+def delivery_pipeline():
+    """fork 2026-11-07: apply → checks → manual checks → commit → cleanup → record (core/apply_pipeline.py)."""
+    from core.apply_pipeline import Pipeline
+    from core import alerts
+
+    def chat(text, run_id=None):
+        try:
+            ChatManager().add_message(active_session_id(), "SYSTEM", text, run_id=run_id)
+        except Exception:
+            pass
+
+    def extend(mission_id, reason):
+        return decide_mission(mission_id, "extend", reason=reason, by="DIRECTOR")
+
+    return Pipeline(MissionStore(), _result_manager(), {"load_config": load_config, "chat": chat, "extend": extend,
+                                                        "invalidate": invalidate_status_cache, "notify": alerts.notify})
+
+
+def mission_of_deliverable(run_id: str):
+    """The mission whose current deliverable is this run (None when the run is not one)."""
+    from core.mission import deliverable_run_id
+    for m in MissionStore().all():
+        if any(s.get("run_id") == run_id for s in m.get("steps") or []) and deliverable_run_id(m) == run_id:
+            return m
+    return None
+
+
 def result_info(run_id: str) -> dict:
     """Result summary for the current run from persisted state (DB row + JSON artifacts). No git, no subprocess."""
     try:
@@ -846,6 +879,8 @@ def mission_view(m: dict, sm: Optional[StateMachine] = None) -> dict:
             "summary": (m.get("summary") or "")[:1200], "blocked_reason": (m.get("blocked_reason") or "")[:500],
             "deliverable": m.get("base_worktree"), "deliverable_run_id": deliverable_run_id(m),
             "applied": applied, "apply_state": (applied or {}).get("status") or ("pending" if m.get("base_worktree") and m.get("status") != "RUNNING" else None),
+            # fork 2026-11-07: delivery pipeline progress (steps, waiting manual check, commit, warnings)
+            "delivery": {k: v for k, v in (m.get("delivery") or {}).items() if k not in ("pid", "files")} or None,
             "created_at": m.get("created_at"), "updated_at": m.get("updated_at")}
 
 
@@ -951,10 +986,20 @@ def decide_mission(mission_id: str, action: str, reason: str = "", max_steps: Op
     sid = active_session_id()
     if action == "stop":
         return stop_missions(reason, mission_id, by=by)
+    if action in ("manual_pass", "manual_fail"):
+        # fork 2026-11-07: the user's answer to a manual check of the delivery pipeline (e.g. Xcode ⌘U)
+        return delivery_pipeline().answer_manual(mission_id, action == "manual_pass", note=reason[:500], by=by)
     if action == "apply":
         rid = deliverable_run_id(m)
         if not rid:
             return {"status": "blocked", "blocks": ["no PASSED milestone to apply"]}
+        # fork 2026-11-07: a project with `apply_pipeline` gets apply → checks → manual checks → commit → cleanup → record
+        if project_pipeline(load_config(), m.get("project_path", "")) is not None:
+            if m.get("status") == "RUNNING":
+                return {"status": "busy", "error": "mission is still running"}
+            piped = delivery_pipeline().start(mission_id, rid, by=by, on_conflict=on_conflict)
+            invalidate_status_cache()
+            return piped
         result = _result_manager().apply_tree(rid, request_id=f"{by.lower()}-{mission_id}-{datetime.utcnow().strftime('%H%M%S')}",
                                               applied_by=by, on_conflict=on_conflict)
         m = store.load(mission_id) or m
@@ -3168,6 +3213,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 invalidate_status_cache()
                 try:
                     if self.path == '/result/apply':
+                        # fork 2026-11-07: a mission deliverable of a project with `apply_pipeline` goes through the
+                        # same delivery pipeline as the stage screen's 「원본에 적용」
+                        owner = mission_of_deliverable(run_id)
+                        if owner and project_pipeline(load_config(), owner.get("project_path", "")) is not None:
+                            result = decide_mission(owner["mission_id"], "apply", by="HUMAN")
+                            return self._send_json(result, 200)
                         snapshot_based = (rm.run_dir(run_id) / "source_snapshot.json").exists()
                         result = (rm.apply_tree if snapshot_based else rm.apply)(run_id, request_id=request_id, applied_by="HUMAN")
                     elif self.path == '/result/discard':

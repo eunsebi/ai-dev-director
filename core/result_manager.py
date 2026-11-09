@@ -744,6 +744,44 @@ class ResultManager:
                 _APPLY_INFLIGHT.discard(key)
                 _RECENT_APPLY_REQUESTS[rid] = "done"
 
+    def revert_applied(self, run_id: str, reason: str, by: str = "DIRECTOR") -> Dict[str, Any]:
+        """fork 2026-11-07: undo an APPLIED delivery from its apply backup (used when a post-apply check of the
+        delivery pipeline fails). Files that existed are restored, files the apply created are removed. A file the
+        user changed after the apply (hash differs from what was applied) is left alone and reported."""
+        if self.result_state(run_id).get("state") != RESULT_APPLIED:
+            return {"status": "refused", "reason": "result is not APPLIED"}
+        manifest = (self._load(run_id, "result_manifest.json") or {}).get("files") or []
+        backup_dir = self.run_dir(run_id) / "apply_backup"
+        try:
+            backup = json.loads((backup_dir / "backup_manifest.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"status": "failed", "reason": "apply backup missing"}
+        run = self.sm.get_run(run_id) or {}
+        proj_root = Path(run.get("project_path") or "").resolve()
+        applied_hash = {m["path"]: m.get("sha256") for m in manifest}
+        restored, removed, skipped, errors = [], [], [], []
+        for e in backup:
+            rel = e["path"]
+            dst = proj_root / rel
+            if not SafetyPolicy.is_within_root(proj_root, dst if dst.exists() else dst.parent):
+                errors.append(f"{rel}: outside project"); continue
+            if dst.exists() and applied_hash.get(rel) and _sha(dst) != applied_hash[rel]:
+                skipped.append(rel); continue                      # changed after the apply: not ours to undo
+            try:
+                if e.get("existed"):
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(backup_dir / rel, dst); restored.append(rel)
+                elif dst.exists():
+                    dst.unlink(); removed.append(rel)
+            except Exception as ex:
+                errors.append(f"{rel}: {ex}")
+        self._set_state(run_id, RESULT_VERIFY_FAILED, f"post-apply check failed, reverted: {reason}"[:500], "",
+                        {"restored": restored, "removed": removed, "skipped": skipped, "rollback_errors": errors})
+        self.sm.log_audit(run_id, by, "RESULT_APPLY_REVERTED", json.dumps(
+            {"reason": reason[:500], "restored": restored, "removed": removed, "skipped": skipped, "errors": errors}, ensure_ascii=False))
+        return {"status": "reverted" if not errors else "partial", "restored": restored, "removed": removed,
+                "skipped": skipped, "errors": errors}
+
     # ------------------------------------------------------------------ discard (human action)
     def discard(self, run_id: str, request_id: str = "", by: str = "HUMAN") -> Dict[str, Any]:
         run = self.sm.get_run(run_id)

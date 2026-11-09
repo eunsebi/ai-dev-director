@@ -222,3 +222,23 @@ Known unrelated on this Mac: `test_v020_provider_ops.py` needs `requests` (colle
   - 아이콘: 초록 = 실행 중이고 응답함, 주황 = 실행 중인데 `/status`가 응답하지 않음, 회색 = 꺼짐. 10초마다 다시 확인한다.
   - 메뉴: 상태(PID·메모리), 대시보드 열기, 켜기·끄기·다시 시작(끄기와 다시 시작은 확인 창을 띄움), 최근 로그 20줄, 로그 보기(콘솔), 로그 폴더 열기.
   - 켜기·끄기는 `launchctl kickstart` / `launchctl kill SIGTERM`. 서버는 켠 뒤 15초쯤 지나야 응답한다.
+
+## 「원본에 적용」 한 번으로 검수·적용·마무리까지 (2026-11-09)
+- **목적**: 미션이 PASS로 끝난 뒤 Claude Code가 손으로 하던 일(로직 테스트, 문구 카탈로그 확인, 적용, ⌘U 확인, 커밋, graphify, push·개발일지, 작업본 정리, 공유 메모리·CLAUDE.md 기록)을 [원본에 적용] 한 번으로 Director가 한다. 2026-11-08에 치워 둔 stash(apply-pipeline)를 되살려 이어 만들었다.
+- **켜는 법**: `config.yaml` → `projects.<경로>.apply_pipeline`. 블록이 없는 프로젝트는 예전 그대로(복사·빌드·실패 시 되돌림만) 동작한다. 단계마다 따로 켜고 끈다. 설정 예시는 `core/apply_pipeline.py` 맨 위 설명에 있다.
+- **순서**: 적용 전 검수(`prechecks`, 작업본에서) → 문구 카탈로그 점검(`string_catalog`) → 원본에 적용·빌드 확인 → 적용 뒤 확인(`checks`, 원본에서) → 사용자 확인(`manual_checks`, 예: ⌘U) → git 커밋 → graphify 갱신 → push → 개발일지 초안 → 작업본·브랜치 정리 → 공유 메모리·CLAUDE.md 기록
+- **실패하면**
+  - 적용 전 검수·카탈로그(`fail_on`) 실패: 원본은 건드리지 않고, 실패 출력을 마지막 단계 결과(`post_apply_failure`, "PRE-APPLY CHECK FAILED")에 붙여 HEAD에 재작업을 맡긴다(「이어서 진행」과 같음).
+  - 적용·적용 뒤 확인·⌘U [실패]: 적용 백업으로 원본을 되돌리고(`revert_applied`) 같은 방식으로 재작업을 맡긴다.
+  - 충돌로 적용 보류: 재작업 없이 사용자를 기다린다(BLOCKED).
+  - 커밋 뒤 단계(커밋·graphify·push·개발일지·정리·기록) 실패: 되돌리지 않고 경고로 남긴다(완료 · 경고 있음).
+- **단계별 내용**
+  - `prechecks`: 작업본에서 실행한다. 명령의 `{worktree}`·`{project}`를 바꿔 넣고 환경변수 `DIRECTOR_WORKTREE`·`DIRECTOR_PROJECT`를 준다. 명령이 작업본 파일을 바꾸면 실패로 본다(빌드 산출물이 적용에 섞이지 않게).
+  - `string_catalog` (`core/string_catalog.py`): 빌드가 만든 `*.stringsdata`(같은 derivedDataPath를 원본·작업본이 함께 쓰므로 `source`가 작업본 안인 것만) 키와 `Localizable.xcstrings`를 비교한다. 카탈로그에 없는 키, stale 표시·코드에서 안 쓰는 키, 바뀐 Swift 줄의 삼항식 안 한국어 문구를 보고한다. 기본은 보고만 하고(⚠), `fail_on: [missing|stale|ternary]`이면 실패로 본다. stringsdata가 없으면 프로젝트 빌드 명령을 작업본에서 한 번 돌린다(`build_if_missing`).
+  - 여러 단계 미션: 마지막 PASS 작업본과 처음 단계의 기준 커밋(`origin_ref`)으로 전체 차이를 적용한다(기존 `apply_tree`). 작업본에서 지운 파일과 충돌로 건너뛴 파일은 적용 단계에 ⚠로 표시한다.
+  - 커밋: 적용한 파일만 하나씩 지정해 add한다. 무시 대상과 `CLAUDE.md`는 넣지 않고, git이 CLAUDE.md를 추적 중이면 경고한다. `include_if_changed`(예: ⌘U 때 Xcode가 다시 쓰는 `Localizable.xcstrings`)는 적용 절차 시작 때 변경이 없던 파일만 함께 커밋한다(사용자의 미커밋 수정은 넣지 않음). 메시지: 제목 = 미션 목표 첫 줄(72자), 본문 = 요약·미션 ID·결과 run·통과한 확인, 끝에 `Co-Authored-By`(`commit.co_authors`).
+  - graphify: `graphify-out/graph.json`이 있을 때만 `graphify update .`.
+  - push: 원격과 추적 브랜치가 있을 때만. 개발일지는 push가 된 뒤에만 `ssh -o BatchMode=yes <ssh_host> ./devlog <repo> <커밋 제목>`(인자는 원격 셸용으로 따옴표 처리).
+  - 기록: HEAD Claude(`claude --print`, 가벼운 호출)에 이 호출에서만 `memory_append`를 더 연다. 허용 도구는 HEAD의 메모리 읽기 도구 + `memory_read`·`memory_append` + `Read/Edit(./CLAUDE.md)`이고, `memory_write`·`memory_delete`·Bash·Write는 막는다. 호출 뒤 git 추적 파일이 바뀌었거나 CLAUDE.md의 `## 작업 현황 (handoff)` 섹션 밖이 바뀌었으면 실패로 보고 CLAUDE.md를 되돌린다.
+- **대시보드**: 스테이지 결과물 카드에 단계 목록(○ 대기 · ◐ 진행 · ✓ 통과 · ⚠ 확인 필요 · ✕ 실패 · ⏳ 사용자 확인 · – 건너뜀)과 실패 사유·⚠ 보고·건너뛴 이유를 보여 준다. 사용자 확인 단계에서는 [통과]/[실패] 버튼이 나오고, [실패]에 적은 내용이 HEAD 재작업에 그대로 전달된다. 진행 상태는 미션 JSON의 `delivery`에 있어 서버를 다시 켜도 사용자 확인 대기가 남는다.
+- **테스트**: `tests/test_fork_apply_pipeline.py`(6개, stash에서 되살림), `tests/test_fork_apply_pipeline_ext.py`(새 단계).

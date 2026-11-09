@@ -190,7 +190,7 @@ function liveModel(){
   return {mode:'live',working,assign:assignment(),...phaseOf(working,verifying,!!(focus&&focus.live)),
     mission:focus&&{goal:focus.goal,project:focus.project,status:focus.status,live:focus.live,max:Math.max(focus.max_steps||0,focus.steps.length),
       steps:focus.steps.map(s=>({index:s.index,state:s.state,tests:s.tests})),passed:focus.passed_steps,updated:utc(focus.updated_at),id:focus.mission_id,
-      deliverable:focus.deliverable,applied:focus.applied,applyState:focus.apply_state,source:focus.source,profile:focus.profile},
+      deliverable:focus.deliverable,applied:focus.applied,applyState:focus.apply_state,source:focus.source,profile:focus.profile,delivery:focus.delivery},
     usage:usage[win]||{by_role:{},by_provider:{},total:{calls:0,seconds:0,tokens:0,exact_tokens:0}},windows:{mission:!!usage.mission,today:!!usage.today,all:!!usage.all},
     calls:(a.recent_calls||[]).slice(0,30).map(c=>({key:c.at+c.role+c.provider,role:c.role,provider:c.provider,seconds:c.seconds,tokens:c.tokens,exact:c.exact,status:c.status,at:utc(c.at),
       reason:c.reason,detail:c.reason_detail,hint:c.reason_hint,run:c.run_id})),
@@ -256,7 +256,8 @@ async function decideMission(id,action,extra){
   try{const body=new URLSearchParams({mission_id:id,action,...(extra||{})});
     const res=await fetch('/ops/mission/decide',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},body});
     const out=await res.json().catch(()=>({}));
-    const msg={applied:'원본에 적용했습니다 · '+(out.files||[]).length+'개 파일',blocked:'적용할 수 없습니다 · '+((out.blocks||[]).join('; ')||'').slice(0,160),discarded:'결과물을 폐기했습니다',resumed:'미션을 이어서 진행합니다 (단계 예산 '+out.max_steps+')',busy:'다른 작업이 진행 중입니다'}[out.status]||(out.status+' '+(out.error||out.reason||''));
+    const msg={applied:'원본에 적용했습니다 · '+(out.files||[]).length+'개 파일',blocked:'적용할 수 없습니다 · '+((out.blocks||[]).join('; ')||'').slice(0,160),discarded:'결과물을 폐기했습니다',resumed:'미션을 이어서 진행합니다 (단계 예산 '+out.max_steps+')',busy:out.message||'다른 작업이 진행 중입니다',
+      pipeline_started:'적용 절차를 시작했습니다 · '+(out.steps||[]).join(' → '),continued:'확인했습니다 · 다음 단계를 진행합니다',rework:'실패로 기록했습니다 · 원본을 되돌리고 HEAD에 재작업을 맡깁니다'}[out.status]||(out.status+' '+(out.error||out.reason||''));
     notice(msg);Trinity.pulse(out.status==='applied'?PULSE.done:out.status==='blocked'?PULSE.warn:PULSE.ok);}
   catch(e){notice('요청 실패 · '+e.message);}
   finally{deliveryBusy=false;pollActivity();}
@@ -266,11 +267,13 @@ function paintDelivery(m){
   if(!box){box=el('div','','delivery');box.id='mission-delivery';$('mission-card').append(box);}
   box.replaceChildren();const ms=m.mission;
   if(!ms||m.mode!=='live'||!ms.deliverable||ms.status==='RUNNING'){return;}
-  const state=(ms.applied&&ms.applied.status)||ms.applyState||'pending',[label,cls]=APPLY_KO[state]||[state,''];
+  const dv=ms.delivery,pipeBusy=!!dv&&(dv.status==='RUNNING'||dv.status==='AWAITING_USER');
+  const state=pipeBusy?'busy':(ms.applied&&ms.applied.status)||ms.applyState||'pending',[label,cls]=APPLY_KO[state]||[state,''];
   const head=el('div','','delivery-head');head.append(el('span',(ms.source==='solomon'?'솔로몬 지시 · ':'')+'결과물','kicker'),el('span',label,'badge '+cls));box.append(head);
   if(ms.applied&&ms.applied.files)box.append(el('small',ms.applied.files.slice(0,6).join(', ')+(ms.applied.files.length>6?' 외 '+(ms.applied.files.length-6)+'개':''),'ai-sub'));
   if(state==='blocked'&&ms.applied&&ms.applied.blocks)box.append(el('small',ms.applied.blocks.join('; ').slice(0,220),'ai-sub'));
-  if(state!=='applied'&&state!=='discarded'){
+  if(dv)paintPipeline(box,ms,dv);
+  if(!pipeBusy&&state!=='applied'&&state!=='discarded'){
     const row=el('div','','delivery-actions');
     const apply=el('button','원본에 적용');apply.type='button';apply.onclick=()=>decideMission(ms.id,'apply',{on_conflict:state==='blocked'?'skip':'block'});
     const more=el('button','이어서 진행');more.type='button';more.onclick=()=>decideMission(ms.id,'extend');
@@ -278,6 +281,30 @@ function paintDelivery(m){
     row.append(apply,more,drop);box.append(row);
     if(state==='blocked')box.append(el('small','"원본에 적용"을 다시 누르면 충돌 파일만 건너뛰고 나머지를 적용합니다.','ai-sub'));
   }
+}
+// fork 2026-11-07: delivery pipeline (apply → checks → manual checks such as ⌘U → commit → cleanup → record)
+const PIPE_MARK={pending:'○',running:'◐',ok:'✓',warn:'⚠',failed:'✕',waiting:'⏳',skipped:'–'};
+const PIPE_STATUS={RUNNING:'적용 절차 진행 중',AWAITING_USER:'사용자 확인 대기',DONE:'적용 절차 완료',DONE_WITH_WARNINGS:'완료 · 경고 있음',REWORK:'확인 실패 · HEAD 재작업',BLOCKED:'적용 보류',ERROR:'적용 절차 오류'};
+function paintPipeline(box,ms,dv){
+  const wrap=el('div','','pipe');wrap.append(el('small',(PIPE_STATUS[dv.status]||dv.status)+(dv.commit?' · 커밋 '+dv.commit.slice(0,7):''),'pipe-title'));
+  const list=el('ol','','pipe-steps');
+  for(const s of dv.steps||[]){const li=el('li','','pipe-step '+s.status);li.append(el('b',PIPE_MARK[s.status]||'·'),el('span',s.name));
+    if(s.detail)li.title=s.detail;
+    // fork 2026-11-09: failure reason and ⚠ reports (e.g. String Catalog) shown inline, skip reasons in one line
+    if(s.detail&&(s.status==='failed'||s.status==='warn'))li.append(el('small',s.detail.slice(0,s.status==='failed'?400:280),'pipe-detail'));
+    else if(s.detail&&s.status==='skipped')li.append(el('small',s.detail.split('\n')[0].slice(0,80),'pipe-detail'));
+    list.append(li);}
+  wrap.append(list);
+  if(dv.status==='AWAITING_USER'&&dv.waiting){const w=dv.waiting,ask=el('div','','pipe-ask');
+    ask.append(el('p',w.name+'을(를) 실행한 뒤 결과를 눌러 주세요.'+(w.instructions?' '+w.instructions:'')));
+    const ok=el('button','통과');ok.type='button';ok.onclick=()=>decideMission(ms.id,'manual_pass');
+    const bad=el('button','실패');bad.type='button';bad.className='ghost';
+    bad.onclick=()=>{const note=prompt('실패 내용을 적어 주세요(실패한 테스트 이름, 오류 메시지). HEAD 재작업에 그대로 전달됩니다.','');
+      if(note!==null)decideMission(ms.id,'manual_fail',{reason:note});};
+    const row=el('div','','delivery-actions');row.append(ok,bad);ask.append(row);wrap.append(ask);}
+  if(dv.error&&dv.status!=='AWAITING_USER')wrap.append(el('small',dv.error.slice(0,240),'pipe-detail'));
+  if((dv.warnings||[]).length)wrap.append(el('small','경고: '+dv.warnings.join('; ').slice(0,300),'pipe-detail'));
+  box.append(wrap);
 }
 function paintWork(m){
   for(const b of $('win-tabs').children){b.classList.toggle('on',b.dataset.win===win&&m.mode==='live');b.disabled=m.mode!=='live'||!m.windows[b.dataset.win];}
