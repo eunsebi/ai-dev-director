@@ -121,6 +121,10 @@ class CompanionHandler(d.DashboardHandler):
             except Exception:
                 current = ''
             return self._send_json({'projects': project_registry(), 'current': current})
+        if path == '/ops/intake':
+            # 디스코드 접수함 (2026-11-12): OpenClaw가 접수 전용 SSH로 남긴 요청. 시작은 아래 POST로 사람이 한다
+            from core import discord_intake
+            return self._send_json({'items': discord_intake.list_items(), 'projects': discord_intake.projects()})
         if path in STATIC_FILES:
             name = STATIC_FILES[path]
             body = (ROOT / 'console' / name).read_bytes()
@@ -221,6 +225,28 @@ class CompanionHandler(d.DashboardHandler):
             import threading
             threading.Thread(target=self.server.shutdown, name='director-shutdown', daemon=True).start()
             return self._send_json({'stopping': True, 'message': 'AI DEV를 멈춥니다. 기록과 작업본은 남고, 다시 켜면 중단된 미션을 이어갑니다.'})
+        if self.path in ('/ops/intake/start', '/ops/intake/discard'):
+            if not d.is_request_origin_allowed(self.headers, self.server.server_address[1])[0] or not self.authorized():
+                return self._send_json({'error': 'local authenticated request required'}, 403)
+            try:
+                size = int(self.headers.get('Content-Length', '0'))
+                if not 0 < size <= 2048 or self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
+                    raise ValueError('JSON request required')
+                payload = json.loads(self.rfile.read(size))
+                if not isinstance(payload, dict):
+                    raise ValueError('object required')
+                from core import discord_intake
+                ident = str(payload.get('id', ''))
+                if self.path == '/ops/intake/discard':
+                    return self._send_json(discord_intake.discard(ident, str(payload.get('reason', ''))))
+                result = discord_intake.start(ident, d.start_goal_mission)
+                d.invalidate_status_cache()
+                code = {'started': 202, 'busy': 409, 'question': 200, 'escalated': 200}.get(result.get('status'), 400)
+                return self._send_json(result, code)
+            except (ValueError, TypeError, KeyError) as exc:
+                return self._send_json({'error': str(exc)}, 400)
+            except Exception as exc:
+                return self._send_json({'error': str(exc)[:500]}, 500)
         if self.path == '/ops/pick-folder':
             if not d.is_request_origin_allowed(self.headers, self.server.server_address[1])[0] or not self.authorized():
                 return self._send_json({'error': 'local authenticated request required'}, 403)

@@ -910,7 +910,7 @@ def start_goal_mission(project_path: str, goal: str, profile: Optional[str] = No
         orch = Orchestrator(config=load_config())
     except Exception as e:
         return {"status": "rejected", "error": str(e)[:300]}
-    label = {"solomon": "솔로몬 CEO 지시", "cli": "CLI 지시", "api": "외부 지시"}.get(source, source)
+    label = {"solomon": "솔로몬 CEO 지시", "cli": "CLI 지시", "api": "외부 지시", "discord": "디스코드 접수"}.get(source, source)
     cm.add_message(sid, "USER", f"[{label} · {profile}] {goal}")
     try:
         previous = latest_deliverable(project_path) if autopilot.enabled(orch.config) else None
