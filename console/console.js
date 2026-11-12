@@ -29,11 +29,8 @@ function setup(){
   if(!dList.children.length)dList.append(el('p','디스코드로 받은 개발 요청이 아직 없습니다.'));}catch(e){dList.replaceChildren(el('p',e.message));}}
  dInbox.addEventListener('toggle',()=>{if(dInbox.open)dLoad();});panel.append(dInbox);
  // 스테이지 위쪽 줄에도 「디스코드 접수 N」: 누르면 작업실로 가서 접수함을 연다
- const dChip=el('button','디스코드 접수 0');dChip.type='button';dChip.id='btn-intake';dChip.title='디스코드로 받은 개발 요청 (작업실 · 디스코드 접수함)';dChip.hidden=true;
- dChip.onclick=()=>{doc.getElementById('tab-workshop')?.click();dInbox.open=true;dLoad();setTimeout(()=>dInbox.scrollIntoView({behavior:'smooth',block:'center'}),150);};
- doc.getElementById('btn-replay')?.before(dChip);
- async function dCount(){try{const j=await fetch('/ops/intake',{cache:'no-store'}).then(r=>r.json());const n=(j.items||[]).filter(x=>x.status==='waiting').length;dInbox.firstChild.textContent=`디스코드 접수함 · 시작 대기 ${n}`;dChip.textContent=`디스코드 접수 ${n}`;dChip.hidden=!n;}catch(e){}}
- dCount();setInterval(dCount,30000);
+ async function dCount(){try{const j=await fetch('/ops/intake',{cache:'no-store'}).then(r=>r.json());const n=(j.items||[]).filter(x=>x.status==='waiting').length;dInbox.firstChild.textContent=`디스코드 접수함 · 시작 대기 ${n}`;if(n&&!dInbox.open){dInbox.open=true;}}catch(e){}}
+ dInbox.id='discord-intake';dCount();
  const tools=el('div','','conversation-tools');
  const focus=el('button','대화로 이동 ↓');focus.type='button';focus.onclick=()=>doc.getElementById('chat-panel').scrollIntoView({behavior:'smooth',block:'start'});
  const noise=el('button','시스템 알림 숨기기');noise.type='button';noise.setAttribute('aria-pressed','false');noise.onclick=()=>{const hidden=doc.body.classList.toggle('hide-system');noise.textContent=hidden?'시스템 알림 보기':'시스템 알림 숨기기';noise.setAttribute('aria-pressed',String(hidden));};
@@ -212,4 +209,14 @@ setInterval(async()=>{try{const r=await fetch('/ops/roles',{cache:'no-store'});i
    alert(j.status==='stopped'?('미션 '+j.missions.join(', ')+' 정지 · AI 프로세스 '+j.killed.length+'개 종료'):'실행 중인 미션이 없습니다.');
   }catch(e){alert('정지 실패 · '+e.message);}finally{b.disabled=false;b.textContent=was;}
  };
+})();
+
+// 디스코드 접수 버튼 (2026-11-12): 작업실(iframe)을 열기 전에도 맨 위 줄에 보인다. 누르면 작업실의 접수함으로 간다
+(function intakeChip(){
+ const chip=document.createElement('button');chip.type='button';chip.id='btn-intake';chip.hidden=true;chip.title='디스코드로 받은 개발 요청 (작업실 · 디스코드 접수함)';
+ const place=()=>{const r=document.getElementById('btn-replay');if(r&&!chip.isConnected)r.before(chip);};
+ async function count(){try{const j=await fetch('/ops/intake',{cache:'no-store'}).then(r=>r.json());const n=(j.items||[]).filter(x=>x.status==='waiting').length;chip.textContent=`디스코드 접수 ${n}`;chip.hidden=!n;place();}catch(e){}}
+ chip.onclick=()=>{document.getElementById('tab-workshop')?.click();let tries=0;const t=setInterval(()=>{const box=frame.contentDocument?.getElementById('discord-intake');if(box||++tries>40){clearInterval(t);if(box){box.open=true;box.dispatchEvent(new Event('toggle'));box.scrollIntoView({behavior:'smooth',block:'center'});}}},250);};
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',count);else count();
+ setInterval(count,30000);
 })();
