@@ -28,7 +28,12 @@ function setup(){
    dList.append(card);}
   if(!dList.children.length)dList.append(el('p','디스코드로 받은 개발 요청이 아직 없습니다.'));}catch(e){dList.replaceChildren(el('p',e.message));}}
  dInbox.addEventListener('toggle',()=>{if(dInbox.open)dLoad();});panel.append(dInbox);
- fetch('/ops/intake',{cache:'no-store'}).then(r=>r.json()).then(j=>{const n=(j.items||[]).filter(x=>x.status==='waiting').length;dInbox.firstChild.textContent=`디스코드 접수함 · 시작 대기 ${n}`;if(n)dInbox.open=true,dLoad();}).catch(()=>{});
+ // 스테이지 위쪽 줄에도 「디스코드 접수 N」: 누르면 작업실로 가서 접수함을 연다
+ const dChip=el('button','디스코드 접수 0');dChip.type='button';dChip.id='btn-intake';dChip.title='디스코드로 받은 개발 요청 (작업실 · 디스코드 접수함)';dChip.hidden=true;
+ dChip.onclick=()=>{doc.getElementById('tab-workshop')?.click();dInbox.open=true;dLoad();setTimeout(()=>dInbox.scrollIntoView({behavior:'smooth',block:'center'}),150);};
+ doc.getElementById('btn-replay')?.before(dChip);
+ async function dCount(){try{const j=await fetch('/ops/intake',{cache:'no-store'}).then(r=>r.json());const n=(j.items||[]).filter(x=>x.status==='waiting').length;dInbox.firstChild.textContent=`디스코드 접수함 · 시작 대기 ${n}`;dChip.textContent=`디스코드 접수 ${n}`;dChip.hidden=!n;}catch(e){}}
+ dCount();setInterval(dCount,30000);
  const tools=el('div','','conversation-tools');
  const focus=el('button','대화로 이동 ↓');focus.type='button';focus.onclick=()=>doc.getElementById('chat-panel').scrollIntoView({behavior:'smooth',block:'start'});
  const noise=el('button','시스템 알림 숨기기');noise.type='button';noise.setAttribute('aria-pressed','false');noise.onclick=()=>{const hidden=doc.body.classList.toggle('hide-system');noise.textContent=hidden?'시스템 알림 보기':'시스템 알림 숨기기';noise.setAttribute('aria-pressed',String(hidden));};

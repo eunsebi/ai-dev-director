@@ -86,6 +86,11 @@ def submit(project):
     if SECRET.search(text):
         out({"ok": False, "error": "비밀값(토큰·비밀번호 등)으로 보이는 내용이 있어 받지 않았습니다"}, 2)
     all_items = items()
+    # 같은 요청을 한 번 더 보내면(재시도 등) 새로 만들지 않고 기다리는 접수 번호를 돌려준다
+    same = next((i for i in all_items if i.get("status") == "waiting" and i.get("project") == project and i.get("request") == text), None)
+    if same:
+        out({"ok": True, "id": same["id"], "duplicate": True, "project": proj.get("name", project),
+             "message": f"이미 접수된 요청입니다({same['id']}). 맥 Director 작업실 「디스코드 접수함」에서 [시작]을 누르면 됩니다."})
     today = datetime.now().strftime("%Y%m%d")
     if sum(1 for i in all_items if i.get("status") == "waiting") >= MAX_WAITING:
         out({"ok": False, "error": f"시작을 기다리는 접수가 {MAX_WAITING}개입니다. Director에서 먼저 처리하세요"}, 3)
@@ -99,7 +104,7 @@ def submit(project):
     tmp.write_text(json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, INTAKE / f"{ident}.json")
     out({"ok": True, "id": ident, "project": proj.get("name", project),
-         "message": f"접수했습니다({ident}). 맥 Director 콘솔 「디스코드 접수함」에서 [시작]을 누르면 미션이 시작됩니다."})
+         "message": f"접수했습니다({ident}). 맥 Director 작업실 탭 「디스코드 접수함」(위쪽 「디스코드 접수 N」 버튼)에서 [시작]을 누르면 미션이 시작됩니다."})
 
 
 def status(ident):

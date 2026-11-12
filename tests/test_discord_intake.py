@@ -126,3 +126,10 @@ def test_http_start_needs_token_and_lists(env, http_server):
     assert req(http_server, 'POST', '/ops/intake/start', body, {'Content-Type': 'application/json'})[0] == 403
     code, out = req(http_server, 'POST', '/ops/intake/discard', body, {'Content-Type': 'application/json', 'X-Solomon-Bridge': 'test-token'})
     assert code == 200 and out['status'] == 'discarded'
+
+
+def test_same_waiting_request_is_not_duplicated(env):
+    a = ssh(env, "submit eodiya", "설정 화면 문구 다듬어줘")[1]
+    b = ssh(env, "submit eodiya", "설정 화면 문구 다듬어줘")[1]
+    assert b["ok"] and b["duplicate"] and b["id"] == a["id"]
+    assert len(list(env.intake.glob("REQ-*.json"))) == 1
