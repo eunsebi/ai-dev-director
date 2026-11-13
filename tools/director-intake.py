@@ -9,10 +9,16 @@
   ssh mac-intake submit <프로젝트>   표준입력(JSON {"request": "...", "from": "..."} 또는 글자)을 접수
   ssh mac-intake status <REQ-…>      접수 상태와 미션 진행
   ssh mac-intake list                최근 접수 10개
+  ssh mac-intake files <프로젝트> [폴더]           git에 올라간 파일 목록(읽기 전용, 2026-11-13)
+  ssh mac-intake read <프로젝트> <파일> [시작줄] [줄수]   파일 내용(줄 번호, 한 번에 최대 400줄)
+  ssh mac-intake search <프로젝트> <낱말> [폴더]   git grep 결과(최대 80줄)
+
+읽기는 git이 추적하는 파일만 된다(.gitignore에 있는 CLAUDE.md·.env 등은 못 읽음). 비밀 파일 이름은 막고,
+비밀값처럼 보이는 글자는 [가림]으로 바꾼다. 쓰기·실행은 하지 않는다. 이름에 빈칸이 있으면 따옴표로 감싼다.
 
 허용 프로젝트: ~/.config/director-intake/projects.json  {"eodiya": {"path": "/abs/path", "name": "어디야"}}
 """
-import json, os, re, secrets, sys
+import json, os, re, secrets, shlex, subprocess, sys
 from datetime import datetime
 from pathlib import Path
 
@@ -25,6 +31,10 @@ ID_RE = re.compile(r"^REQ-\d{14}-[0-9a-f]{6}$")
 MAX_WAITING, MAX_PER_DAY = 10, 20
 SECRET = re.compile(r"Bearer [A-Za-z0-9_-]{20,}|(PASSWORD|[Pp]ass(word|wd)?|비밀번호|비번)\s*[:=]\s*\S{6,}|sk-[A-Za-z0-9_-]{20,}"
                     r"|gh[po]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|pcn_[A-Za-z0-9_-]{30,}|PRIVATE KEY-----|AKIA[0-9A-Z]{16}")
+DENY_NAME = re.compile(r"(^|/)(CLAUDE\.md|AGENTS\.local\.md|\.env(\..*)?|\.netrc|\.npmrc|\.pypirc|id_[a-z0-9]+(\.pub)?|GoogleService-Info\.plist"
+                       r"|google-services\.json|.*\.(pem|key|p12|p8|pfx|keystore|jks|mobileprovision|cer|der|sqlite|db))$"
+                       r"|(^|/)[^/]*(secret|credential|password|passwd|token)[^/]*$", re.I)
+MAX_READ_LINES, MAX_FILE_BYTES, MAX_SEARCH = 400, 2 * 1024 * 1024, 80
 SAY = {"waiting": "시작 대기(맥 Director 콘솔에서 [시작]을 눌러야 시작)", "started": "시작함", "discarded": "버림"}
 
 
@@ -119,8 +129,88 @@ def status(ident):
          "mission": mission_info(it.get("mission_id"))})
 
 
+def _proj_root(project):
+    proj = projects().get(project)
+    if not proj:
+        out({"ok": False, "error": "허용되지 않은 프로젝트입니다", "allowed": sorted(projects())}, 2)
+    root = Path(proj["path"]).resolve()
+    if not (root / ".git").exists():
+        out({"ok": False, "error": "git 저장소가 아니라 읽을 수 없습니다"}, 2)
+    return root
+
+
+def _tracked(root):
+    r = subprocess.run(["git", "-C", str(root), "-c", "core.quotepath=off", "ls-files", "-z"], capture_output=True, timeout=20)
+    if r.returncode != 0:
+        out({"ok": False, "error": "git 파일 목록을 읽지 못했습니다"}, 4)
+    return [f for f in r.stdout.decode("utf-8", "replace").split("\0") if f and not DENY_NAME.search(f)]
+
+
+def _clean_prefix(prefix):
+    prefix = (prefix or "").strip().strip("/")
+    if prefix.startswith("-") or ".." in prefix.split("/"):
+        out({"ok": False, "error": "폴더 이름이 올바르지 않습니다"}, 2)
+    return prefix
+
+
+def _mask(text):
+    return SECRET.sub("[가림]", text)
+
+
+def files_cmd(project, prefix=""):
+    root, prefix = _proj_root(project), _clean_prefix(prefix)
+    fs = [f for f in _tracked(root) if not prefix or f == prefix or f.startswith(prefix + "/")]
+    out({"ok": True, "project": project, "prefix": prefix or None, "total": len(fs), "files": fs[:500], "truncated": len(fs) > 500})
+
+
+def read_cmd(project, rel, start="1", count=str(MAX_READ_LINES)):
+    root = _proj_root(project)
+    rel = rel.strip().removeprefix("./")
+    try:
+        start_i, count_i = max(1, int(start)), max(1, min(MAX_READ_LINES, int(count)))
+    except ValueError:
+        out({"ok": False, "error": "시작줄·줄수는 숫자여야 합니다"}, 2)
+    if rel not in set(_tracked(root)):
+        out({"ok": False, "error": "읽을 수 없는 파일입니다(git에 없거나 막힌 이름). files 명령으로 경로를 확인하세요"}, 2)
+    path = (root / rel)
+    real = path.resolve()
+    if path.is_symlink() or root not in real.parents or not real.is_file():
+        out({"ok": False, "error": "읽을 수 없는 파일입니다"}, 2)
+    if real.stat().st_size > MAX_FILE_BYTES:
+        out({"ok": False, "error": "파일이 너무 큽니다(2MB 초과)"}, 2)
+    data = real.read_bytes()
+    if b"\0" in data[:8192]:
+        out({"ok": False, "error": "글자 파일이 아닙니다"}, 2)
+    lines = data.decode("utf-8", "replace").splitlines()
+    chunk = lines[start_i - 1:start_i - 1 + count_i]
+    body = "\n".join(f"{start_i + i}\t{_mask(l)[:2000]}" for i, l in enumerate(chunk))
+    out({"ok": True, "project": project, "file": rel, "total_lines": len(lines), "start": start_i, "end": start_i + len(chunk) - 1,
+         "more": start_i - 1 + len(chunk) < len(lines), "content": body})
+
+
+def search_cmd(project, word, prefix=""):
+    root, prefix = _proj_root(project), _clean_prefix(prefix)
+    if not 2 <= len(word) <= 200:
+        out({"ok": False, "error": "낱말은 2~200자여야 합니다"}, 2)
+    allowed = set(_tracked(root))
+    cmd = ["git", "-C", str(root), "-c", "core.quotepath=off", "grep", "-n", "-I", "-F", "--no-color", "-e", word, "--"] + ([prefix] if prefix else [])
+    r = subprocess.run(cmd, capture_output=True, timeout=20)
+    hits = []
+    for line in r.stdout.decode("utf-8", "replace").splitlines():
+        f = line.split(":", 1)[0]
+        if f in allowed:
+            hits.append(_mask(line)[:300])
+        if len(hits) >= MAX_SEARCH:
+            break
+    out({"ok": True, "project": project, "word": word, "hits": hits, "truncated": len(hits) >= MAX_SEARCH})
+
+
 def main():
-    args = (os.environ.get("SSH_ORIGINAL_COMMAND") or " ".join(sys.argv[1:])).split()
+    raw = os.environ.get("SSH_ORIGINAL_COMMAND") or " ".join(shlex.quote(a) for a in sys.argv[1:])
+    try:
+        args = shlex.split(raw)
+    except ValueError:
+        out({"ok": False, "error": "따옴표가 맞지 않습니다"}, 2)
     cmd, rest = (args[0], args[1:]) if args else ("", [])
     if cmd == "projects" and not rest:
         out({"ok": True, "projects": {k: v.get("name", k) for k, v in projects().items()}})
@@ -131,7 +221,13 @@ def main():
     if cmd == "list" and not rest:
         out({"ok": True, "items": [{"id": i.get("id"), "project": i.get("project"), "status": i.get("status"), "request": str(i.get("request", ""))[:80],
                                      "mission_id": i.get("mission_id")} for i in items()[:10]]})
-    out({"ok": False, "error": "할 수 있는 명령: projects | submit <프로젝트> | status <REQ-…> | list"}, 2)
+    if cmd == "files" and 1 <= len(rest) <= 2:
+        files_cmd(*rest)
+    if cmd == "read" and 2 <= len(rest) <= 4:
+        read_cmd(*rest)
+    if cmd == "search" and 2 <= len(rest) <= 3:
+        search_cmd(*rest)
+    out({"ok": False, "error": "할 수 있는 명령: projects | submit <프로젝트> | status <REQ-…> | list | files <프로젝트> [폴더] | read <프로젝트> <파일> [시작줄] [줄수] | search <프로젝트> <낱말> [폴더]"}, 2)
 
 
 if __name__ == "__main__":

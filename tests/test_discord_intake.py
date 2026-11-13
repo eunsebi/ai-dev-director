@@ -133,3 +133,35 @@ def test_same_waiting_request_is_not_duplicated(env):
     b = ssh(env, "submit eodiya", "설정 화면 문구 다듬어줘")[1]
     assert b["ok"] and b["duplicate"] and b["id"] == a["id"]
     assert len(list(env.intake.glob("REQ-*.json"))) == 1
+
+
+def _git_proj(env):
+    p = env.proj
+    subprocess.run(["git", "init", "-q", str(p)], check=True)
+    (p / "docs" / "spec").mkdir(parents=True)
+    (p / "docs" / "spec" / "06 장소.md").write_text("# 장소\n## 9. 결정 필요\n- 반경 1km?\n토큰 pcn_abcdefghijklmnopqrstuvwxyz0123456789\n", encoding="utf-8")
+    (p / "CLAUDE.md").write_text("서버 주소 비밀\n", encoding="utf-8")
+    (p / ".env").write_text("KEY=1\n", encoding="utf-8")
+    (p / "GoogleService-Info.plist").write_text("<plist/>\n", encoding="utf-8")
+    (p / "App.swift").write_text("let 반경 = 1000\n", encoding="utf-8")
+    (p / ".gitignore").write_text("CLAUDE.md\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(p), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(p), "add", "-f", ".env"], check=True)  # 실수로 추적된 비밀 파일도 막혀야 한다
+    return p
+
+
+def test_files_read_search_are_read_only_and_filtered(env):
+    _git_proj(env)
+    code, res = ssh(env, "files eodiya")
+    assert code == 0 and "App.swift" in res["files"] and "docs/spec/06 장소.md" in res["files"]
+    assert not any(f in res["files"] for f in ("CLAUDE.md", ".env", "GoogleService-Info.plist"))
+    assert ssh(env, "files eodiya docs")[1]["files"] == ["docs/spec/06 장소.md"]
+    code, res = ssh(env, "read eodiya 'docs/spec/06 장소.md'")
+    assert code == 0 and "2\t## 9. 결정 필요" in res["content"] and "pcn_" not in res["content"] and "[가림]" in res["content"]
+    assert ssh(env, "read eodiya 'docs/spec/06 장소.md' 3 1")[1]["content"] == "3\t- 반경 1km?"
+    for bad in ["read eodiya CLAUDE.md", "read eodiya .env", "read eodiya ../projects.json", "read eodiya /etc/passwd",
+                "read papercode App.swift", "files eodiya ../..", "search eodiya x", "read eodiya 'unclosed"]:
+        code, res = ssh(env, bad)
+        assert code != 0 and not res["ok"], bad
+    code, res = ssh(env, "search eodiya 반경")
+    assert code == 0 and any(h.startswith("App.swift:1:") for h in res["hits"]) and not any("CLAUDE" in h for h in res["hits"])
