@@ -237,6 +237,23 @@ class Verifier:
             if "OK" in output:
                 counts["passed"] = counts["total"]
 
+        # Swift (2026-11-13): XCTest "Executed 12 tests, with 1 failure" (last line = overall) and
+        # Swift Testing "Test run with 169 tests in 25 suites passed" / "... failed after 0.1 seconds with 2 issues".
+        xc = re.findall(r"Executed\s+(\d+)\s+tests?,\s+with\s+(\d+)\s+failures?", output)
+        st_ok = re.findall(r"Test run with\s+(\d+)\s+tests?(?:\s+in\s+\d+\s+suites?)?\s+passed", output)
+        st_bad = re.findall(r"Test run with\s+(\d+)\s+tests?(?:\s+in\s+\d+\s+suites?)?\s+failed", output)
+        if xc or st_ok or st_bad:
+            total = failed = 0
+            if xc:
+                n, f = (int(x) for x in xc[-1])
+                total, failed = total + n, failed + f
+            if st_ok:
+                total += int(st_ok[-1])
+            elif st_bad:
+                total += int(st_bad[-1])
+                failed += max(1, len([l for l in re.findall(r"^.*Test .+ failed after.*$", output, re.M) if "Test run with" not in l]))
+            counts = {"passed": total - failed, "failed": failed, "total": total}
+
         if counts["total"] == 0:
             counts["total"] = counts["passed"] + counts["failed"]
 

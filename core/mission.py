@@ -229,6 +229,13 @@ class MissionRunner:
             result["treated_as"] = treated
             self.store.save(mission)
 
+        limit = self._usage_limit_stop(result)
+        if limit:
+            self.store.save(mission)
+            self.notify(f"[미션 {step['index']}/{total}] AI 사용 한도로 멈춤: {limit[:160]} — 한도가 풀리면 「이어서 진행」",
+                        run_id=step.get("run_id"))
+            return self._finish(mission, "BLOCKED", blocked=f"USAGE_LIMIT: {limit} (한도가 풀리면 「이어서 진행」)")
+
         plan = self._plan(orch, mission)
         status = str(plan.get("status", "")).upper()
         if status == "DONE":
@@ -393,6 +400,26 @@ class MissionRunner:
         if result["final_state"] != State.PASS:
             parts.append((result.get("stop_detail") or "")[:200])
         return ", ".join(parts)
+
+    @staticmethod
+    def _usage_limit_stop(result: Dict[str, Any]) -> Optional[str]:
+        """2026-11-13: a step that produced no change because the subscription limit was hit (Claude 5-hour limit, then a
+        fallback builder that returned nothing) is not a failed milestone. Stop the mission (BLOCKED, resumable)
+        instead of letting HEAD re-plan and burn the step budget. A step whose fallback still produced work goes on."""
+        if not result or result.get("final_state") == State.PASS or result.get("files_changed"):
+            return None
+        run_id = result.get("run_id")
+        if not run_id:
+            return None
+        try:
+            from core import usage
+            rows = usage._rows("run_id=? AND error_code='USAGE_LIMIT'", (run_id,))
+        except Exception:
+            return None
+        if not rows:
+            return None
+        last = rows[-1]
+        return f"{last['provider']} {last['role']}: {(last['error_detail'] or '')[:200]}".strip()
 
     def _finish(self, mission: Dict[str, Any], status: str, summary: str = "", blocked: Optional[str] = None):
         mission["status"] = status

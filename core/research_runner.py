@@ -78,6 +78,20 @@ class TriadResearchRunner:
         raise ValueError(f"unsupported TRIAD domain: {domain}")
 
     @staticmethod
+    def _claude_error_text(stdout: str) -> str:
+        """claude --print --output-format json puts the real reason ("You've hit your 5-hour limit · resets …") in
+        `result` at the END of a long JSON document; the 500-char error cut used to drop it (2026-11-13), so the
+        failover logic saw UNKNOWN instead of a usage limit."""
+        try:
+            doc = json.loads((stdout or "").strip() or "{}")
+        except (TypeError, ValueError):
+            return ""
+        if not isinstance(doc, dict):
+            return ""
+        parts = [str(doc.get(k)) for k in ("result", "error", "api_error_status") if doc.get(k) not in (None, "", False)]
+        return " ".join(parts).strip()
+
+    @staticmethod
     def _is_retryable(message: str) -> bool:
         """Bounded-retry allowlist (V3.0-H hardening). Deliberately narrow: only failures with positive
         evidence of being a transient transport/runtime hiccup are retried. Everything else - quota, auth,
@@ -138,7 +152,8 @@ class TriadResearchRunner:
             )
         if result.exit_code != 0:
             error = (result.stderr or result.stdout or "provider call failed").strip()
-            message = f"{normalized} CLI exit {result.exit_code}: {error[:500]}"
+            reason = self._claude_error_text(result.stdout) if normalized == "ANTHROPIC" else ""
+            message = f"{normalized} CLI exit {result.exit_code}: " + (f"{reason[:300]} | " if reason else "") + error[:500]
             raise ResearchProviderCallError(message, retryable=self._is_retryable(message), meta=meta)
         output = result.stdout
         if normalized == "GOOGLE":

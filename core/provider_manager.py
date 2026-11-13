@@ -44,6 +44,11 @@ class ErrorCategory(str, Enum):
         if any(phrase in lower for phrase in [
             "usage limit",
             "usage limit reached",
+            "hit your limit",
+            "hit your 5-hour limit",
+            "hit your weekly limit",
+            "5-hour limit",
+            "weekly limit",
             "usage limit exceeded",
             "quota exhausted",
             "subscription limit",
