@@ -262,3 +262,18 @@ Known unrelated on this Mac: `test_v020_provider_ops.py` needs `requests` (colle
   - 리뷰가 pass이고 P2만 있으면 판정을 바꾸지 않고 `[P2 FOLLOW-UPS: …]`로 기록만 한다.
   - 판정 뒤집기 이유의 "삭제 관련 지적"은 "허락 없이 지운 것"(forbidden_deletions)으로 바꿨다.
 - **테스트**: `tests/test_fork_p2_gate.py`(F11 1단계 review.json 형태에서 PASS 유지 등 5개), `test_fork_korean_failures.py`의 삭제 테스트를 플래그 기준으로 갱신.
+
+## 디스코드 접수함 (2026-11-12~13)
+- OpenClaw(TrueNAS VM)가 디스코드 요청을 맥에 **접수만** 하고, 미션 시작은 사람이 Director 화면에서 [시작]을 누른다.
+- `tools/director-intake.py`: SSH forced command(`authorized_keys`의 `command=…,restrict`)로만 쓰는 명령. projects·submit·status·list + 읽기 전용 files·read·search(git이 추적하는 파일만, CLAUDE.md·.env·비밀 이름 차단, 비밀값 가림). 요청 5~4000자, 비밀값 거절, 대기 10개·하루 20개, 같은 요청 중복 방지.
+- `core/discord_intake.py` + companion `/ops/intake`·`/ops/intake/start`·`/ops/intake/discard`(로컬 Origin + X-Solomon-Bridge), 콘솔 「디스코드 접수함」과 맨 위 「디스코드 접수 N」 버튼. start는 허용 프로젝트를 다시 확인하고 `start_goal_mission(source='discord')`.
+- `tools/setup-intake-key.sh`: VM 열쇠를 접수 전용으로 묶는다.
+- 테스트: `tests/test_discord_intake.py`(9개).
+
+## 한도 일시정지·Swift 테스트 집계·목표 이탈 막기 (2026-11-13)
+- **계기**: 어디야 F6 미션 MSN-261113131013(5단계 FAILED). 1단계 코드는 좋았지만 테스트 미설정으로 Codex 리뷰·판정이 "테스트 증거 없음" FAIL, HEAD가 F6 대신 테스트 스크립트를 고치는 단계를 세움, Claude 5시간 한도를 UNKNOWN으로 보고 대체 Builder가 빈 결과.
+- `research_runner._claude_error_text`: `claude --print` JSON 끝의 `result`(한도 문구)를 오류 메시지 앞에 둔다. `ErrorCategory`가 hit your limit·5-hour limit·weekly limit을 QUOTA로 본다.
+- `mission._usage_limit_stop`: 변경 없이 끝난 단계에 USAGE_LIMIT 기록이 있으면 실패로 세지 않고 BLOCKED로 멈춘다(「이어서 진행」).
+- `verifier._parse_test_counts`: Swift Testing(`Test run with N tests … passed/failed`)·XCTest(`Executed N tests, with K failures`) 집계.
+- HEAD 계획 "STAY ON THE MISSION GOAL" + `autopilot.verification_infra_paths/off_goal_infra/protect_infra`: 목표가 말하지 않은 검증 파일(검증 명령이 쓰는 저장소 파일, CI)을 고치는 ORDER는 HEAD에 되돌리고(OFF_GOAL), 통과 ORDER는 그 파일을 protected_paths에 넣는다.
+- 테스트: `tests/test_fork_limit_pause.py`(3개), `tests/test_fork_stay_on_goal.py`(4개).
