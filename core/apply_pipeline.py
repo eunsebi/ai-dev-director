@@ -525,8 +525,11 @@ class Pipeline:
         proj = m["project_path"]
         root = (Path(proj) / ".director_worktrees").resolve()
         removed, branches, problems = 0, 0, []
+        # 2026-11-13: also the runs a usage-limit pause replaced (step["limit_retries"]); they kept their worktrees
+        rids = []
         for st in m.get("steps") or []:
-            rid = st.get("run_id")
+            rids += [st.get("run_id")] + list(st.get("limit_retries") or [])
+        for rid in [r for r in rids if r]:
             run = self.rm.sm.get_run(rid) if rid else None
             if not run:
                 continue
