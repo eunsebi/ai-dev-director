@@ -110,7 +110,7 @@ function paintNow(a,focus){
 function paintMission(focus){
  const m=doc.getElementById('ai-mission'),opened=new Set([...m.querySelectorAll('details[open]>summary')].map(s=>s.textContent)),scroll=m.scrollTop;m.replaceChildren();
  if(!focus){m.append(el('strong','미션'),el('p','아직 미션 기록이 없습니다. 채팅으로 요청하면 여기에 단계별 진행이 표시됩니다.'));return;}
- const status=focus.status==='RUNNING'?(focus.live?'진행 중':'중단됨 · 재개 대기'):(MISSION_STATUS[focus.status]||focus.status);
+ const status=focus.status==='RUNNING'?(focus.live?'진행 중':'중단됨 · 재개 대기'):(focus.status==='BLOCKED'&&String(focus.blocked_reason||'').startsWith('USAGE_LIMIT')?'한도로 일시정지 · 풀리면 이어서 진행':(MISSION_STATUS[focus.status]||focus.status));
  const title=el('div','','ai-mission-title');title.append(el('strong','미션 · '+focus.project),el('span',status,'ai-badge '+(focus.status==='DONE'?'ok':focus.status==='RUNNING'&&focus.live?'run':'warn')));
  m.append(title,el('p',focus.goal,'ai-goal'));
  const bar=el('div','','ai-steps');

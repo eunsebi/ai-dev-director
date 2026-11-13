@@ -44,3 +44,17 @@ def test_usage_limit_step_stops_mission(monkeypatch):
     assert MissionRunner._usage_limit_stop({"run_id": "RUN-X", "final_state": "FAIL", "files_changed": ["a.swift"]}) is None
     assert MissionRunner._usage_limit_stop({"run_id": "RUN-X", "final_state": "PASS", "files_changed": []}) is None
     assert MissionRunner._usage_limit_stop({"run_id": "RUN-Y", "final_state": "FAIL", "files_changed": []}) is None
+
+
+def test_limit_pause_notice_says_nothing_to_decide(tmp_path):
+    from core.mission import MissionStore
+    sent = []
+    runner = MissionRunner.__new__(MissionRunner)
+    runner.store = MissionStore(tmp_path / "m")
+    runner.notify = lambda text, **kw: sent.append(text)
+    runner._auto_apply = lambda m: None
+    m = {"mission_id": "MSN-T", "goal": "F6 2단계", "steps": [{"run_id": "RUN-1", "result": {"final_state": "PASS"}}]}
+    runner._finish(m, "BLOCKED", blocked="USAGE_LIMIT: ANTHROPIC BUILDER: You've hit your 5-hour limit")
+    assert "일시정지" in sent[0] and "사용자 결정 필요" not in sent[0]
+    runner._finish(dict(m), "BLOCKED", blocked="USER_DECISION: 결제 필요")
+    assert "사용자 결정 필요" in sent[1]

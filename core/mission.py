@@ -453,6 +453,8 @@ class MissionRunner:
         where = mission.get("base_worktree") or "(아직 통과한 단계 없음)"
         head_line = {"DONE": "미션 완료", "BLOCKED": "미션 보류 - 사용자 결정 필요",
                      "INCOMPLETE": "미션 중단 - 단계 예산 소진 또는 계획 불가", "FAILED": "미션 실패"}[status]
+        if status == "BLOCKED" and str(blocked or "").startswith("USAGE_LIMIT"):
+            head_line = "미션 일시정지 - AI 사용 한도 (결정할 것 없음, 한도가 풀리면 「이어서 진행」)"
         text = (f"{head_line} ({passed}/{len(mission['steps'])} 단계 통과)\n"
                 f"목표: {mission['goal'][:300]}\n{mission['summary'][:1500]}\n결과물 위치(작업본): {where}")
         if blocked:
