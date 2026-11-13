@@ -1,6 +1,7 @@
 """2026-11-13: 어디야 F6 미션 — Claude 5시간 한도 소진을 UNKNOWN으로 보고 실패 단계로 세던 문제, Swift 테스트 수 0으로 집계."""
 import json
 from types import SimpleNamespace
+from types import SimpleNamespace
 
 from core.mission import MissionRunner
 from core.provider_manager import ErrorCategory
@@ -58,3 +59,29 @@ def test_limit_pause_notice_says_nothing_to_decide(tmp_path):
     assert "일시정지" in sent[0] and "사용자 결정 필요" not in sent[0]
     runner._finish(dict(m), "BLOCKED", blocked="USER_DECISION: 결제 필요")
     assert "사용자 결정 필요" in sent[1]
+
+
+def test_resume_after_limit_pause_reruns_same_step(tmp_path, monkeypatch):
+    """이어서 진행을 눌러도 예전 결과를 다시 읽고 곧바로 또 멈추던 문제(F6 2단계 MSN-261113193806)."""
+    from core.mission import MissionStore
+    runner = MissionRunner.__new__(MissionRunner)
+    runner.store = MissionStore(tmp_path / "m")
+    sent, executed = [], []
+    runner.notify = lambda text, **kw: sent.append(text)
+    runner.factory = lambda: SimpleNamespace(config={}, sm=SimpleNamespace(get_run=lambda rid: None))
+
+    def fake_execute(orch, mission, step):
+        executed.append(step["run_id"])
+        step["run_id"] = "RUN-NEW"
+    monkeypatch.setattr(MissionRunner, "_execute", lambda self, o, m, s: fake_execute(o, m, s))
+    monkeypatch.setattr(MissionRunner, "_evidence", staticmethod(lambda orch, rid: {"run_id": rid, "final_state": "PASS", "files_changed": ["a"]}))
+    monkeypatch.setattr(MissionRunner, "_plan", lambda self, orch, m: {"status": "DONE", "summary": "ok"})
+    runner._auto_apply = lambda m: None
+    m = {"mission_id": "MSN-R", "goal": "g", "project_path": str(tmp_path), "max_steps": 6, "status": "RUNNING",
+         "max_consecutive_failures": 3,
+         "steps": [{"index": 1, "order": {}, "run_id": "RUN-OLD", "limit_paused": True,
+                    "result": {"run_id": "RUN-OLD", "final_state": "FAIL", "files_changed": []}}]}
+    out = runner._advance(m)
+    assert executed == [None] and m["steps"][0]["limit_retries"] == ["RUN-OLD"]
+    assert m["steps"][0]["run_id"] == "RUN-NEW" and out["status"] == "DONE"
+    assert any("다시 실행" in t for t in sent)

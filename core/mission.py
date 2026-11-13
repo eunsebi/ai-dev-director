@@ -183,6 +183,13 @@ class MissionRunner:
         knobs = autopilot.profile_overrides(orch.config, mission.get("profile"))
         if knobs:                                              # the profile's budgets apply to every run of this mission
             orch.config.setdefault("autonomy", {}).update({k: v for k, v in knobs.items() if k != "max_steps"})
+        if step.get("limit_paused") and (step.get("result") or {}).get("final_state") != State.PASS:
+            # Resumed after a usage-limit pause (2026-11-13): the step never really ran, so run the SAME ORDER again
+            # in a fresh run instead of re-reading the old result (which would pause the mission again at once).
+            step.setdefault("limit_retries", []).append(step.get("run_id"))
+            step["limit_paused"], step["run_id"], step["result"] = False, None, None
+            self.store.save(mission)
+            self.notify(f"[미션 {step['index']}/{total}] 한도가 풀려 같은 단계를 다시 실행합니다", run_id=None)
         row = orch.sm.get_run(step["run_id"]) if step.get("run_id") else None
         # a recorded result goes stale when the run moved on afterwards (e.g. the user approved a blocked step)
         stale = step.get("result") is not None and row is not None and row["current_state"] != step["result"].get("final_state")
@@ -231,6 +238,7 @@ class MissionRunner:
 
         limit = self._usage_limit_stop(result)
         if limit:
+            step["limit_paused"] = True
             self.store.save(mission)
             self.notify(f"[미션 {step['index']}/{total}] AI 사용 한도로 멈춤: {limit[:160]} — 한도가 풀리면 「이어서 진행」",
                         run_id=step.get("run_id"))
