@@ -426,3 +426,68 @@ def pick_alternative(pm, exclude: set, avoid: Optional[set] = None) -> Optional[
     cands = [d for d in DOMAIN_PREFERENCE if d in usable and d not in exclude]
     cands.sort(key=lambda d: d in avoid)
     return ALIAS_BY_DOMAIN[cands[0]] if cands else None
+
+
+# 2026-11-13: 어디야 F6 미션에서 HEAD(대체 Codex)가 "테스트 증거 없음" 판정 뒤 F6 대신 scripts/logic-tests.sh를 고치는
+# 단계를 세웠다. 프로젝트의 검증 명령이 쓰는 파일과 CI 파일은, 미션 목표가 그 파일을 말하지 않는 한 고치지 않는다.
+INFRA_PATTERNS = (".github/**", ".gitlab-ci.yml", ".circleci/**", "Jenkinsfile", "azure-pipelines.yml")
+INFRA_WORDS = ("검증 스크립트", "테스트 스크립트", "테스트 러너", "검증 설정", "test runner", "test script", "ci ")
+
+
+def verification_infra_paths(commands, project_path) -> List[str]:
+    """Repo-relative files that the project's build/test/lint commands run (e.g. scripts/logic-tests.sh)."""
+    import shlex
+    from pathlib import Path as _P
+    root = _P(project_path).resolve()
+    found = []
+    for cmd in commands or []:
+        if not cmd:
+            continue
+        tokens = list(cmd) if isinstance(cmd, (list, tuple)) else shlex.split(str(cmd))
+        for tok in tokens:
+            tok = str(tok)
+            if "/" not in tok or tok.startswith("-"):
+                continue
+            path = _P(tok)
+            if path.is_absolute():
+                try:
+                    rel = path.resolve().relative_to(root).as_posix()
+                except ValueError:
+                    continue
+            else:
+                rel = path.as_posix().lstrip("./")
+            if (root / rel).is_file() and rel not in found:
+                found.append(rel)
+    return found + [p for p in INFRA_PATTERNS if p not in found]
+
+
+def off_goal_infra(order: OrderSchema, mission_goal: str, infra: List[str]) -> List[str]:
+    """Infra files this ORDER means to change although the mission goal never mentions them."""
+    import fnmatch
+    goal = (mission_goal or "").lower()
+    if any(w in goal for w in INFRA_WORDS):
+        return []
+    hits = []
+    texts = " ".join([order.goal or ""] + list(order.acceptance_criteria or [])).lower()
+    for item in infra:
+        name = item.rsplit("/", 1)[-1].lower()
+        if name and name in goal:
+            continue
+        wanted = any(fnmatch.fnmatch(out, item) or out == item for out in (order.required_outputs or []))
+        named = "*" not in item and name and name in texts
+        if wanted or named:
+            hits.append(item)
+    return hits
+
+
+def protect_infra(order: OrderSchema, mission_goal: str, infra: List[str]) -> OrderSchema:
+    """Add the project's verification files to protected_paths unless the mission goal names them."""
+    goal = (mission_goal or "").lower()
+    if any(w in goal for w in INFRA_WORDS):
+        return order
+    extra = [p for p in infra if p.rsplit("/", 1)[-1].lower() not in goal and p not in (order.protected_paths or [])]
+    if not extra:
+        return order
+    data = order.model_dump()
+    data["protected_paths"] = list(order.protected_paths or []) + extra
+    return OrderSchema(**data)

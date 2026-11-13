@@ -345,8 +345,20 @@ class MissionRunner:
                 plan = orch.head.plan_next(mission["goal"], history, context, cwd=where) or {}
                 status = str(plan.get("status", "")).upper()
                 if status == "CONTINUE":
-                    problems = autopilot.order_conflicts(OrderSchema(**(plan.get("order") or {})))
+                    order = OrderSchema(**(plan.get("order") or {}))
+                    problems = autopilot.order_conflicts(order)
+                    infra = self._infra_paths(orch, mission)
+                    off = autopilot.off_goal_infra(order, mission["goal"], infra)
+                    if off and not problems:
+                        err = "OFF_GOAL: " + ", ".join(off)
+                        context["previous_plan_rejected"] = (
+                            f"{err}. This ORDER changes the project's verification files ({', '.join(off)}), which the "
+                            "MISSION GOAL does not ask for. Plan the goal's own work instead (build on the last attempt "
+                            "if its code is good) or answer BLOCKED if the goal cannot proceed without that change.")
+                        orch.sm.log_audit(last_run, "ORCHESTRATOR", "MISSION_PLAN_RETRY", f"attempt {attempt + 1}: {err}")
+                        continue
                     if not problems:
+                        plan["order"] = autopilot.protect_infra(order, mission["goal"], infra).model_dump()
                         return plan
                     # HEAD's own ORDER contradicts itself (e.g. "create data/x.json" while protecting data/*.json):
                     # it would fail in the Builder every time, so HEAD gets it back with the exact conflict.
@@ -366,6 +378,17 @@ class MissionRunner:
             if attempt >= 1 and not orch._swap_agent("head", last_run, _NullLogger(), tried, "MISSION_PLANNING", err):
                 break
         return {"status": "STALLED", "reason": err, "summary": ""}
+
+    @staticmethod
+    def _infra_paths(orch, mission: Dict[str, Any]) -> List[str]:
+        try:
+            cmds = orch._verification_cmds()
+        except Exception:
+            cmds = ()
+        try:
+            return autopilot.verification_infra_paths(cmds, mission["project_path"])
+        except Exception:
+            return list(autopilot.INFRA_PATTERNS)
 
     # ------------------------------------------------------------------ evidence / reporting
     @staticmethod
