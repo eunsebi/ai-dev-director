@@ -79,7 +79,8 @@ def test_1_no_full_page_reload(env):
     assert 'id="chat-input"' in html and 'id="send-btn"' in html and 'id="send-status"' in html
     assert "HEAD is working..." in html
     # scroll preservation + input preservation are client-side: the poller appends only and never touches the input
-    assert "nearBottom()" in html and "appendMessage" in html and "chatBox.appendChild" in html
+    # fork 2026-11-14: messages are appended into per-prompt groups inside chat-box (still append-only)
+    assert "nearBottom()" in html and "appendMessage" in html and ("chatBox.appendChild" in html or "placeMessage(chatBox" in html)
     assert "innerHTML" not in html
 
 
