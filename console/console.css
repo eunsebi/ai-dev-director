@@ -71,3 +71,6 @@
 .ai-row>span:nth-child(2){grid-column:1/-1;order:1;font-size:11px;color:var(--muted);word-break:keep-all;overflow-wrap:normal}
 .ai-row.head>span:nth-child(2),.ai-row.total>span:nth-child(2){display:none}
 }
+/* HEAD 대화 요청별 묶음 (2026-11-14) */
+.director-v2.hide-system #chat-history-box .msg-SYSTEM{display:none}.director-v2 #chat-history-box{padding:20px;flex:1;min-height:240px}.director-v2 .turn-tools{padding:10px 18px;background:#14202e;gap:8px}.director-v2 .turn-tools button{background:transparent;color:var(--muted);border:1px solid var(--border);font-size:11px;min-height:30px;padding:5px 10px}.director-v2 .turn-tools button.on{color:var(--text);border-color:var(--blue);background:#1d3350}.director-v2 .turn-tools select{max-width:200px;background:#101a27;min-height:30px;font-size:12px;border-radius:7px;padding:4px 8px}.director-v2 .turn{border-radius:10px;margin-bottom:12px;background:#132131}.director-v2 .turn>summary{padding:11px 14px;font-size:13px}.director-v2 .turn-body{padding:12px 12px 2px}.director-v2 .turn-body .msg:last-child{margin-bottom:10px}
+@media(min-width:1500px){.director-v2 #chat-history-box{padding:24px 30px}}

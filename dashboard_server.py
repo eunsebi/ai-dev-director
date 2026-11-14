@@ -1588,14 +1588,94 @@ def build_research_status_payload(session_id: Optional[str] = None) -> dict:
     }
 
 
+_CHAT_SCHEMA_READY = None
+
+
+def _ensure_chat_schema() -> None:
+    """chat_messages.project_path is added by ChatManager's migration; make sure it ran (once per DB file)."""
+    global _CHAT_SCHEMA_READY
+    db = str(get_db_path())
+    if _CHAT_SCHEMA_READY != db:
+        ChatManager()
+        _CHAT_SCHEMA_READY = db
+
+
+_PROJECT_SELECTED_RE = re.compile(r"^PROJECT_SELECTED:\s*(.+?)\s*$", re.S)
+
+
+def _fill_message_projects(rows: list, session_projects: dict) -> list:
+    """Messages written before the project_path column existed have no project. Infer it per session from
+    the PROJECT_SELECTED events (forward), then back-fill the start of a session from its first known project,
+    finally fall back to the session's current project. Rows must be in id order."""
+    by_session = collections.defaultdict(list)
+    for r in rows:
+        by_session[r["session_id"]].append(r)
+    for sid, items in by_session.items():
+        current = None
+        for r in items:
+            m = _PROJECT_SELECTED_RE.match(str(r.get("content") or "")) if r.get("role") == "SYSTEM" else None
+            if m:
+                current = m.group(1)
+            if r.get("project_path"):
+                current = r["project_path"]
+            elif current:
+                r["project_path"] = current
+        first = next((r["project_path"] for r in items if r.get("project_path")), None) or session_projects.get(sid) or ""
+        for r in items:
+            if not r.get("project_path"):
+                r["project_path"] = first
+    return rows
+
+
+def _project_label(path: str) -> str:
+    path = (path or "").rstrip("/\\")
+    return re.split(r"[/\\]", path)[-1] if path else "프로젝트 없음"
+
+
 def chat_messages_after(after_id: int, session_id: Optional[str] = None) -> list:
     """Messages with id > after_id (append-only polling; the page never re-renders old messages)."""
+    _ensure_chat_schema()
     session_id = session_id or active_session_id()
     with get_db_conn() as conn:
-        rows = conn.execute(
-            "SELECT id, role, content, run_id, created_at FROM chat_messages WHERE session_id = ? AND id > ? ORDER BY id ASC",
-            (session_id, int(after_id))).fetchall()
-    return [dict(r) for r in rows]
+        rows = [dict(r) for r in conn.execute(
+            "SELECT id, session_id, role, content, run_id, created_at, project_path FROM chat_messages "
+            "WHERE session_id = ? AND id > ? ORDER BY id ASC", (session_id, int(after_id))).fetchall()]
+        sess = conn.execute("SELECT project_path FROM chat_sessions WHERE id = ?", (session_id,)).fetchone()
+        if rows and int(after_id) > 0 and not rows[0].get("project_path"):
+            # inference needs the session's earlier messages too
+            prev = [dict(r) for r in conn.execute(
+                "SELECT id, session_id, role, content, project_path FROM chat_messages WHERE session_id = ? AND id <= ? "
+                "ORDER BY id ASC", (session_id, int(after_id))).fetchall()]
+            _fill_message_projects(prev + rows, {session_id: sess["project_path"] if sess else ""})
+    if int(after_id) <= 0:
+        _fill_message_projects(rows, {session_id: sess["project_path"] if sess else ""})
+    return rows
+
+
+def chat_history(project: str = "", limit: int = 1500) -> dict:
+    """Read-only HEAD chat history across ALL sessions (newest `limit` messages, returned oldest first),
+    optionally only one project, plus the project list with message/prompt counts for the filter."""
+    _ensure_chat_schema()
+    limit = max(50, min(int(limit or 1500), 5000))
+    with get_db_conn() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT id, session_id, role, content, run_id, created_at, project_path FROM chat_messages ORDER BY id ASC").fetchall()]
+        sessions = {r["id"]: r["project_path"] for r in conn.execute("SELECT id, project_path FROM chat_sessions").fetchall()}
+    _fill_message_projects(rows, sessions)
+    projects = collections.OrderedDict()
+    for r in rows:
+        p = r.get("project_path") or ""
+        e = projects.setdefault(p, {"path": p, "name": _project_label(p), "messages": 0, "prompts": 0, "last_at": ""})
+        e["messages"] += 1
+        e["prompts"] += 1 if r.get("role") == "USER" else 0
+        e["last_at"] = r.get("created_at") or e["last_at"]
+    if project:
+        rows = [r for r in rows if (r.get("project_path") or "") == project]
+    truncated = len(rows) > limit
+    rows = rows[-limit:]
+    plist = sorted(projects.values(), key=lambda e: e["last_at"], reverse=True)
+    return {"messages": rows, "projects": plist, "project": project, "truncated": truncated,
+            "active_session_id": active_session_id()}
 
 
 DASHBOARD_JS = r"""
@@ -1645,10 +1725,10 @@ DASHBOARD_JS = r"""
     return ['· 시스템 알림', 'ev-info'];
   }
   function nearBottom() { return chatBox.scrollTop + chatBox.clientHeight >= chatBox.scrollHeight - 40; }
-  function appendMessage(m) {
-    var stick = nearBottom();
+  function buildMessage(m) {
     var div = document.createElement('div');
     div.className = 'msg msg-' + m.role; div.setAttribute('data-id', m.id);
+    div.setAttribute('data-project', m.project_path || ''); div.setAttribute('data-time', m.created_at || ''); div.setAttribute('data-run', m.run_id || '');
     if (m.role === 'SYSTEM') {
       var lk = eventLabel(m.content); var kk = eventKo(m.content);
       var tag = document.createElement('span'); tag.className = 'ev ' + lk[1]; tag.textContent = lk[0];
@@ -1661,8 +1741,161 @@ DASHBOARD_JS = r"""
       var pre = document.createElement('pre'); pre.textContent = m.content;
       div.appendChild(strong); div.appendChild(pre);
     }
-    chatBox.appendChild(div);
+    return div;
+  }
+  function appendMessage(m) {
+    var stick = nearBottom();
+    placeMessage(chatBox, liveTurns, buildMessage(m), m, true);
     if (stick) chatBox.scrollTop = chatBox.scrollHeight;     // only auto-scroll when the reader was already at the bottom
+  }
+  // ---- HEAD chat grouped by prompt, filterable by project (fork 2026-11-14) ----
+  // Every USER prompt opens a collapsible group holding the HEAD replies and system events that follow it.
+  // The newest group stays open, older ones fold; a project change or a new session also starts a group.
+  // "전체 기록" reads /chat/history (all sessions, read-only) into a second box; the live box keeps polling.
+  var liveTurns = { cur: null, n: 0, session: null, project: null };
+  var histTurns = { cur: null, n: 0, session: null, project: null };
+  var chatView = 'live', chatProject = '', histBox = null, histLoaded = '';
+  function projName(p) { p = (p || '').replace(/[\/\\]+$/, ''); return p ? p.split(/[\/\\]/).pop() : '프로젝트 없음'; }
+  function fmtTime(t) {
+    if (!t) return ''; var d = new Date(t + (/Z|[+-]\d\d:\d\d$/.test(t) ? '' : 'Z')); if (isNaN(d.getTime())) return '';
+    var hh = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+    return d.toDateString() === new Date().toDateString() ? hh : (d.getMonth() + 1) + '/' + d.getDate() + ' ' + hh;
+  }
+  var TURN_STATUS = [
+    [/finished: PASS|RESULT_APPLIED|결과물 적용: (applied|ok|done)/i, '\u2713 완료', 'ts-ok'],
+    [/finished: (FAIL|TIMEOUT)|Run failed|HEAD Error|결과물 폐기/, '\u2717 실패', 'ts-bad'],
+    [/HUMAN_REQUIRED|APPROVAL_REQUIRED/, '\u26a0 확인 필요', 'ts-warn'],
+    [/작업 정지/, '\u25a0 정지', 'ts-warn'],
+    [/Starting background run|미션 .*시작|자동 재개|이어서 진행/, '\u25cf 진행', 'ts-run']
+  ];
+  function newTurn(box, st, m, kind) {
+    var g = document.createElement('details'); g.className = 'turn turn-' + kind;
+    g.setAttribute('data-project', m.project_path || ''); g.setAttribute('data-session', m.session_id || '');
+    var sum = document.createElement('summary');
+    var no = document.createElement('span'); no.className = 'turn-no';
+    var title = document.createElement('span'); title.className = 'turn-title';
+    var meta = document.createElement('span'); meta.className = 'turn-meta';
+    var stat = document.createElement('span'); stat.className = 'turn-status';
+    if (kind === 'prompt') {
+      st.n += 1; no.textContent = '#' + st.n; g.setAttribute('data-no', st.n);
+      var text = String(m.content || '').replace(/^\[[^\]]{1,60}\]\s*/, '').split('\n').filter(function (x) { return x.trim(); })[0] || '(빈 요청)';
+      title.textContent = text.length > 90 ? text.slice(0, 90) + '\u2026' : text; title.title = m.content || '';
+    } else {
+      no.textContent = '\u00b7';
+      title.textContent = kind === 'project' ? '프로젝트 전환 \u2192 ' + projName(m.project_path) : (kind === 'session' ? '새 대화 시작' : '요청 전 알림');
+    }
+    g.setAttribute('data-title', title.textContent);
+    sum.appendChild(no); sum.appendChild(title); sum.appendChild(stat); sum.appendChild(meta);
+    var body = document.createElement('div'); body.className = 'turn-body';
+    g.appendChild(sum); g.appendChild(body);
+    g._meta = meta; g._stat = stat; g._body = body; g._count = 0; g._time = fmtTime(m.created_at);
+    if (st.cur) { st.cur.open = false; st.cur.classList.remove('latest'); st.cur.classList.add('older'); }
+    g.open = true; g.classList.add('latest');
+    box.appendChild(g); st.cur = g;
+    return g;
+  }
+  function placeMessage(box, st, div, m, live) {
+    var proj = m.project_path || '', sess = m.session_id || st.session;
+    var isProjectSwitch = m.role === 'SYSTEM' && /^PROJECT_SELECTED:/.test(m.content || '');
+    var kind = null;
+    if (m.role === 'USER') kind = 'prompt';
+    else if (!st.cur) kind = 'pre';
+    else if (st.session && sess && sess !== st.session) kind = 'session';
+    else if (isProjectSwitch && proj !== st.project) kind = 'project';
+    else if (proj && st.project && proj !== st.project && st.cur.className.indexOf('turn-prompt') < 0) kind = 'project';
+    if (kind) newTurn(box, st, m, kind);
+    st.session = sess; if (proj) st.project = proj;
+    var g = st.cur; g._body.appendChild(div); g._count += 1;
+    if (!g.getAttribute('data-project') && proj) g.setAttribute('data-project', proj);
+    g._meta.textContent = projName(g.getAttribute('data-project')) + (g._time ? ' \u00b7 ' + g._time : '') + ' \u00b7 ' + g._count + '개';
+    if (m.role === 'SYSTEM') for (var i = 0; i < TURN_STATUS.length; i++) if (TURN_STATUS[i][0].test(m.content || '')) { g._stat.textContent = TURN_STATUS[i][1]; g._stat.className = 'turn-status ' + TURN_STATUS[i][2]; break; }
+    if (live) { applyChatFilter(); refreshTurnNav(); }
+  }
+  function activeBox() { return chatView === 'history' && histBox ? histBox : chatBox; }
+  function applyChatFilter() {
+    [chatBox, histBox].forEach(function (box) {
+      if (!box) return;
+      [].slice.call(box.querySelectorAll('.turn')).forEach(function (g) { g.style.display = (!chatProject || g.getAttribute('data-project') === chatProject) ? '' : 'none'; });
+    });
+  }
+  function refreshTurnNav() {
+    var sel = document.getElementById('turn-nav'); if (!sel) return;
+    var keep = sel.value; while (sel.options.length > 1) sel.remove(1);
+    var turns = [].slice.call(activeBox().querySelectorAll('.turn-prompt')).filter(function (g) { return g.style.display !== 'none'; });
+    turns.reverse().forEach(function (g, i) {
+      var o = document.createElement('option'); o.value = g.getAttribute('data-no') + '@' + (g.getAttribute('data-session') || '');
+      o.textContent = '#' + g.getAttribute('data-no') + (i === 0 ? ' (최근) ' : ' ') + g.getAttribute('data-title').slice(0, 50) + ' \u00b7 ' + (g._time || '');
+      o._turn = g; sel.appendChild(o);
+    });
+    sel.options[0].textContent = '요청으로 이동 (' + turns.length + '개)';
+    sel.value = keep; if (sel.selectedIndex < 0) sel.selectedIndex = 0;
+  }
+  function setProjectOptions(projects) {
+    var sel = document.getElementById('chat-project-filter'); if (!sel) return;
+    var known = {}; [].slice.call(sel.options).forEach(function (o) { known[o.value] = o; });
+    (projects || []).forEach(function (p) {
+      var label = (p.name || projName(p.path)) + (p.prompts !== undefined ? ' \u00b7 요청 ' + p.prompts : '');
+      if (known[p.path]) { if (p.path) known[p.path].textContent = label; return; }
+      var o = document.createElement('option'); o.value = p.path; o.textContent = label; o.title = p.path; sel.appendChild(o); known[p.path] = o;
+    });
+    sel.value = chatProject;
+  }
+  function loadHistory(force) {
+    if (!histBox) return;
+    var key = chatProject || '*';
+    if (!force && histLoaded === key) { refreshTurnNav(); return; }
+    histBox.textContent = '이전 대화 기록을 읽고 있습니다\u2026';
+    fetch('/chat/history?project=' + encodeURIComponent(chatProject), { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (j) {
+      histBox.textContent = ''; histTurns = { cur: null, n: 0, session: null, project: null };
+      setProjectOptions(j.projects);
+      if (j.truncated) { var t = document.createElement('div'); t.className = 'turn-note'; t.textContent = '오래된 기록은 생략했습니다 (최근 메시지만 표시)'; histBox.appendChild(t); }
+      (j.messages || []).forEach(function (m) {
+        if (histTurns.session && m.session_id !== histTurns.session) histTurns.n = 0;   // numbering restarts per conversation
+        placeMessage(histBox, histTurns, buildMessage(m), m, false);
+      });
+      if (!(j.messages || []).length) { var e = document.createElement('div'); e.className = 'turn-note'; e.textContent = '이 프로젝트의 대화 기록이 없습니다.'; histBox.appendChild(e); }
+      histLoaded = key; applyChatFilter(); refreshTurnNav(); histBox.scrollTop = histBox.scrollHeight;
+    }).catch(function (e) { histBox.textContent = '기록을 읽지 못했습니다: ' + e; });
+  }
+  function setChatView(v) {
+    chatView = v;
+    chatBox.style.display = v === 'live' ? '' : 'none'; if (histBox) histBox.style.display = v === 'history' ? '' : 'none';
+    var lb = document.getElementById('chat-view-live'), hb = document.getElementById('chat-view-history');
+    if (lb) { lb.classList.toggle('on', v === 'live'); lb.setAttribute('aria-pressed', String(v === 'live')); }
+    if (hb) { hb.classList.toggle('on', v === 'history'); hb.setAttribute('aria-pressed', String(v === 'history')); }
+    if (v === 'history') loadHistory(false); else refreshTurnNav();
+  }
+  function setupTurnTools() {
+    var bar = document.createElement('div'); bar.id = 'turn-tools'; bar.className = 'turn-tools';
+    function btn(id, text, fn) { var b = document.createElement('button'); b.type = 'button'; b.id = id; b.className = 'ghost'; b.textContent = text; b.addEventListener('click', fn); bar.appendChild(b); return b; }
+    btn('chat-view-live', '현재 대화', function () { setChatView('live'); });
+    btn('chat-view-history', '전체 기록', function () { setChatView('history'); });
+    var ps = document.createElement('select'); ps.id = 'chat-project-filter'; ps.setAttribute('aria-label', '프로젝트별 보기');
+    var all = document.createElement('option'); all.value = ''; all.textContent = '모든 프로젝트'; ps.appendChild(all);
+    ps.addEventListener('change', function () { chatProject = ps.value; applyChatFilter(); if (chatView === 'history') loadHistory(false); else refreshTurnNav(); });
+    bar.appendChild(ps);
+    var nav = document.createElement('select'); nav.id = 'turn-nav'; nav.setAttribute('aria-label', '요청으로 이동');
+    var o0 = document.createElement('option'); o0.value = ''; o0.textContent = '요청으로 이동'; nav.appendChild(o0);
+    nav.addEventListener('change', function () { var o = nav.options[nav.selectedIndex]; if (o && o._turn) { o._turn.open = true; o._turn.scrollIntoView({ block: 'start', behavior: 'smooth' }); } });
+    bar.appendChild(nav);
+    btn('turn-collapse', '이전 요청 접기', function () { [].slice.call(activeBox().querySelectorAll('.turn')).forEach(function (g) { g.open = g.classList.contains('latest'); }); });
+    btn('turn-expand', '모두 펼치기', function () { [].slice.call(activeBox().querySelectorAll('.turn')).forEach(function (g) { g.open = true; }); });
+    chatBox.parentNode.insertBefore(bar, chatBox);
+    histBox = document.createElement('div'); histBox.id = 'chat-history-box'; histBox.style.display = 'none'; histBox.setAttribute('aria-label', 'HEAD 대화 전체 기록');
+    chatBox.parentNode.insertBefore(histBox, chatBox.nextSibling);
+    // regroup the server-rendered messages of the current session
+    [].slice.call(chatBox.children).forEach(function (div) {
+      if (!div.classList || !div.classList.contains('msg')) return;
+      var role = (div.className.match(/msg-(\w+)/) || [])[1] || 'SYSTEM';
+      var pre = div.querySelector('pre'), raw = div.querySelector('.evraw');
+      var m = { role: role, content: pre ? pre.textContent : (raw ? raw.textContent : div.textContent), project_path: div.getAttribute('data-project') || '', created_at: div.getAttribute('data-time') || '' };
+      placeMessage(chatBox, liveTurns, div, m, false);
+    });
+    var seen = {}, plist = [];
+    [].slice.call(chatBox.querySelectorAll('.turn')).forEach(function (g) { var p = g.getAttribute('data-project'); if (p && !seen[p]) { seen[p] = 1; plist.push({ path: p }); } });
+    setProjectOptions(plist);
+    fetch('/chat/history?limit=50', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (j) { setProjectOptions(j.projects); }).catch(function () {});
+    setChatView('live');
   }
   function updateSendUi() {
     var busy = sending || serverBusy;
@@ -2220,6 +2453,7 @@ DASHBOARD_JS = r"""
     if (sending) return;                                  // double-click / rapid click / Enter+click -> one POST
     var text = input.value.trim();
     if (!text) return;
+    if (chatView !== 'live') setChatView('live');
     sending = true; updateSendUi();
     var rid = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + '-' + Math.random().toString(16).slice(2));
     fetch('/chat', { method: 'POST',
@@ -2246,7 +2480,7 @@ DASHBOARD_JS = r"""
     fetch('/chat/new', { method: 'POST', headers: { 'Accept': 'application/json', 'X-Requested-With': 'fetch' } })
     .then(function (r) { return r.json(); })
     .then(function (j) {
-      if (j.status === 'ok') { while (chatBox.firstChild) chatBox.removeChild(chatBox.firstChild); lastId = 0; sendStatus.textContent = ''; }
+      if (j.status === 'ok') { while (chatBox.firstChild) chatBox.removeChild(chatBox.firstChild); lastId = 0; sendStatus.textContent = ''; liveTurns = { cur: null, n: 0, session: null, project: null }; histLoaded = ''; setChatView('live'); }
       else { sendStatus.textContent = 'New chat refused: ' + (j.message || j.status); }
     })
     .catch(function (e) { sendStatus.textContent = 'New chat failed: ' + e; })
@@ -2282,6 +2516,7 @@ DASHBOARD_JS = r"""
   var initialMode = 'NORMAL';
   try { initialMode = window.localStorage.getItem('director-dashboard-mode') || 'NORMAL'; } catch (e) {}
   setDashboardView(initialMode === 'TRIAD' ? 'TRIAD' : 'NORMAL');
+  try { setupTurnTools(); } catch (e) { if (window.console) console.error('turn grouping failed', e); }
   chatBox.scrollTop = chatBox.scrollHeight;               // initial load only
   pollStatus();
   pollMessages();
@@ -2413,6 +2648,28 @@ DASHBOARD_CSS = r"""
     .msg-SYSTEM .evt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .msg-SYSTEM.expanded { align-items: flex-start; }
     .msg-SYSTEM.expanded .evt { white-space: pre-wrap; word-break: break-word; color: var(--text); }
+    /* HEAD chat grouped by prompt (fork 2026-11-14) */
+    .turn-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+    .turn-tools button.on { color: var(--text); border-color: var(--blue); background: rgba(90,169,255,0.14); }
+    .turn-tools select { max-width: 260px; min-width: 0; background: var(--panel, #101a27); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; font-size: 12px; }
+    #chat-history-box { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px 12px; font-size: 13.5px; }
+    .turn { border: 1px solid var(--border); border-radius: 8px; margin: 0 0 8px 0; background: rgba(255,255,255,0.015); }
+    .turn > summary { display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: pointer; list-style: none; font-size: 12.5px; }
+    .turn > summary::-webkit-details-marker { display: none; }
+    .turn > summary::before { content: '\25B8'; color: var(--muted); font-size: 11px; }
+    .turn[open] > summary::before { content: '\25BE'; }
+    .turn[open] > summary { border-bottom: 1px solid var(--border); }
+    .turn-no { color: var(--blue); font-weight: 700; flex: 0 0 auto; }
+    .turn-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+    .turn-pre .turn-title, .turn-session .turn-title, .turn-project .turn-title { color: var(--muted); }
+    .turn-meta { flex: 0 0 auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .turn-status { flex: 0 0 auto; font-size: 11px; white-space: nowrap; }
+    .ts-ok { color: var(--green); } .ts-bad { color: var(--red); } .ts-warn, .ts-run { color: var(--amber); }
+    .turn.latest { border-color: var(--blue); }
+    .turn.latest > summary .turn-no::after { content: ' 최근'; font-size: 10px; font-weight: 600; color: var(--blue); }
+    .turn-body { padding: 8px 10px 2px 10px; }
+    .turn-note { color: var(--muted); font-size: 12px; padding: 6px 2px 10px; }
+    @media (max-width: 640px) { .turn-meta { display: none; } .turn-tools select { max-width: 100%; flex: 1 1 140px; } }
     #chat-form { display: flex; gap: 8px; align-items: flex-end; padding: 8px 10px; border-top: 1px solid var(--border); }
     #chat-input { flex: 1; resize: none; height: 40px; }
     #send-status { color: var(--amber); font-size: 12px; min-height: 14px; }
@@ -2573,21 +2830,24 @@ def render_html():
         st = build_status_payload()
         cm = ChatManager()
         sid = st.get("session_id") or active_session_id()
-        messages = cm.get_messages(sid)
+        messages = chat_messages_after(0, sid)
         last_id = max([int(m.get('id') or 0) for m in messages] or [0])
         chat_html = ""
         for msg in messages:
             role = html_lib.escape(str(msg['role']))
             content = html_lib.escape(str(msg['content']))
             mid = int(msg.get('id') or 0)
+            meta = (f" data-project=\"{html_lib.escape(str(msg.get('project_path') or ''))}\""
+                    f" data-time=\"{html_lib.escape(str(msg.get('created_at') or ''))}\""
+                    f" data-run=\"{html_lib.escape(str(msg.get('run_id') or ''))}\"")
             if role == "SYSTEM":
                 label, cls = _event_label(str(msg['content']))
                 ko_text, _ko_cls = I18N.event_ko(str(msg['content']))
-                chat_html += (f"<div class='msg msg-SYSTEM' data-id='{mid}'><span class='ev {cls}'>{label}</span>"
+                chat_html += (f"<div class='msg msg-SYSTEM' data-id='{mid}'{meta}><span class='ev {cls}'>{label}</span>"
                               f"<span class='evt' title=\"click to expand\" data-raw=\"{content}\">{html_lib.escape(ko_text)}</span>"
                               f"<span class='evraw'>{content}</span></div>")
             else:
-                chat_html += f"<div class='msg msg-{role}' data-id='{mid}'><strong>{role}</strong><pre>{content}</pre></div>"
+                chat_html += f"<div class='msg msg-{role}' data-id='{mid}'{meta}><strong>{role}</strong><pre>{content}</pre></div>"
 
         system_mode = st["system_mode"]
         mode_hint = html_lib.escape(st.get("system_mode_hint") or "")
@@ -3142,6 +3402,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 payload = {"messages": chat_messages_after(after_id, session_id), "head_busy": chat_in_flight(), "session_id": session_id}
             except Exception as e:
                 payload = {"messages": [], "head_busy": chat_in_flight(), "error": str(e)}
+            self._send_json(payload)
+        elif parsed.path == '/chat/history':
+            q = urllib.parse.parse_qs(parsed.query)
+            try:
+                payload = chat_history(q.get('project', [''])[0], int(q.get('limit', ['1500'])[0] or 1500))
+            except Exception as e:
+                payload = {"messages": [], "projects": [], "error": str(e)[:300]}
             self._send_json(payload)
         else:
             self.send_response(404)

@@ -68,6 +68,11 @@ class ChatManager:
                              ("observed_fields", "TEXT"), ("declared_fields", "TEXT"), ("outcome", "TEXT")):
                 if col not in cols:
                     cursor.execute(f"ALTER TABLE chat_provenance ADD COLUMN {col} {ddl}")
+            # fork 2026-11-14: each message remembers the project its session pointed at when it was written,
+            # so the HEAD chat can be grouped/filtered per project even after the session switched projects.
+            mcols = [r[1] for r in cursor.execute("PRAGMA table_info(chat_messages)").fetchall()]
+            if "project_path" not in mcols:
+                cursor.execute("ALTER TABLE chat_messages ADD COLUMN project_path TEXT")
             conn.commit()
 
     def create_session(self, session_id: str, project_path: str, head_provider: str) -> None:
@@ -93,10 +98,10 @@ class ChatManager:
         with self._get_conn() as conn:
             conn.execute(
                 """
-                INSERT INTO chat_messages (session_id, role, content, run_id, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO chat_messages (session_id, role, content, run_id, created_at, project_path)
+                VALUES (?, ?, ?, ?, ?, (SELECT project_path FROM chat_sessions WHERE id = ?))
                 """,
-                (session_id, role, content, run_id, now)
+                (session_id, role, content, run_id, now, session_id)
             )
             conn.execute(
                 """

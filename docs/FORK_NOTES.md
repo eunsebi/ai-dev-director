@@ -277,3 +277,10 @@ Known unrelated on this Mac: `test_v020_provider_ops.py` needs `requests` (colle
 - `verifier._parse_test_counts`: Swift Testing(`Test run with N tests … passed/failed`)·XCTest(`Executed N tests, with K failures`) 집계.
 - HEAD 계획 "STAY ON THE MISSION GOAL" + `autopilot.verification_infra_paths/off_goal_infra/protect_infra`: 목표가 말하지 않은 검증 파일(검증 명령이 쓰는 저장소 파일, CI)을 고치는 ORDER는 HEAD에 되돌리고(OFF_GOAL), 통과 ORDER는 그 파일을 protected_paths에 넣는다.
 - 테스트: `tests/test_fork_limit_pause.py`(3개), `tests/test_fork_stay_on_goal.py`(4개).
+
+## HEAD 대화를 요청별·프로젝트별로 나눠 보기 (2026-11-14)
+- **계기**: 작업실 가운데 HEAD 대화창이 모든 요청·시스템 알림을 한 줄로 계속 쌓아서, 어느 요청의 답인지, 지난 대화가 어디까지인지 찾기 어려웠다.
+- `chat_messages.project_path` 열을 추가했다(ChatManager 마이그레이션). 메시지를 쓸 때 세션의 현재 프로젝트를 함께 저장한다. 예전 메시지는 `_fill_message_projects`가 PROJECT_SELECTED 알림을 따라 추정한다(세션 앞부분은 처음 알려진 프로젝트, 그것도 없으면 세션 프로젝트).
+- 대화창 묶음(DASHBOARD_JS): USER 요청 하나가 접히는 묶음 하나(`#번호 · 요청 첫 줄 · 결과(✓ 완료/✗ 실패/⚠ 확인 필요/● 진행) · 프로젝트 · 시각 · 메시지 수`)가 된다. 가장 최근 묶음만 펼쳐 두고(「최근」 표시), 예전 묶음은 접힌다. 프로젝트가 바뀌거나 새 대화가 시작되면 구분 묶음이 생긴다.
+- 도구 줄: [현재 대화]/[전체 기록], 프로젝트 고르기(요청 수 표시), 「요청으로 이동」, [이전 요청 접기]·[모두 펼치기]. 「전체 기록」은 새 GET `/chat/history?project=`(모든 세션, 읽기 전용, 최근 1500개)를 따로 그린다. 실시간 대화창의 폴링·추가 방식은 그대로다.
+- 테스트: `tests/test_fork_chat_turns.py`(5개). `test_v0238 test_1`은 메시지가 묶음 안으로 들어가게 바뀐 것에 맞춰 확인 문구를 고쳤다.
