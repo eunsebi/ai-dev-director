@@ -153,14 +153,24 @@ class Verifier:
         # Parse test metrics (e.g. 4 passed, Ran 4 tests)
         test_counts = cls._parse_test_counts(test_res.get("output", ""))
 
-        build_errors = []
+        build_errors, build_errors_source = [], None
         if build_res.get("executed") and not build_res.get("passed"):
             build_errors = cls.error_digest(build_res.get("output", ""), root=str(wt))
+            build_errors_source = "build" if build_errors else None
+        elif test_res.get("executed") and not test_res.get("passed") and not test_counts.get("total"):
+            # fork 2026-11-15: the build passed (or there is none) but not one test ran: the test step itself did not
+            # compile (e.g. a script that builds a Swift package of the logic and runs `swift test`). Its compiler
+            # lines go to the Builder like a build failure. Only file-located errors count, so an environment failure
+            # that prints a bare `error: ...` (no simulator, missing tool) is still judged by Reviewer/HEAD.
+            found = cls.error_digest(test_res.get("output", ""), root=str(wt))
+            if any(not e.startswith("error:") for e in found):
+                build_errors, build_errors_source = found, "test"
 
         return {
             "passed": overall_passed,
             "summary": summary,
             "build_errors": build_errors,
+            "build_errors_source": build_errors_source,
             "build": build_res,
             "test": test_res,
             "lint": lint_res,
