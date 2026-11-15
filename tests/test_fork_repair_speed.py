@@ -489,7 +489,8 @@ def orch_with_test_compile(tmp_path, **autonomy):
         "import os, subprocess, sys\nt = open('feature.py').read() if os.path.exists('feature.py') else ''\n"
         "if 'BROKEN' in t:\n    print('/cache/Sources/App/feature.swift:1:5: error: BROKEN is not a token')\n"
         "    sys.exit(1)\n"
-        f"sys.exit(subprocess.call({PYTEST_CMD!r}, shell=True))\n")
+        # the interpreter itself, not PYTEST_CMD's bare `python` (macOS has only python3 on PATH)
+        "sys.exit(subprocess.call([sys.executable, '-m', 'pytest', 'tests/']))\n")
     auto = {"enabled": True, "max_repairs": 2, "head_proxy": True, "builder_attempts": 3}
     auto.update(autonomy)
     return _mock_orch(bootstrap={"enabled": True}, autonomy=auto,
