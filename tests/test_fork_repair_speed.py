@@ -289,3 +289,158 @@ def test_repair_round_refuses_a_complete_rewrite_of_an_existing_file(tmp_path):
                                          proj, order, repair=True)
     assert set(ok) == {"Src/New.swift", "Src/Feature.swift"}
     assert ProposalBuilder.resolve_changes([{"path": "Src/Feature.swift", "content": "r"}], [], proj, order)
+
+
+# 포크 2026-11-15: rustc 기본 형식은 `error[E0308]: msg` 다음 줄 ` --> path:line:col`에 위치가 있어
+# 예전 패턴으로는 마지막 `error: could not compile` 한 줄만 남았다(빌더가 무엇을 고칠지 모름).
+RUST_LOG = """   Compiling demo v0.1.0 (/wt)
+error[E0308]: mismatched types
+ --> /wt/src/main.rs:4:18
+  |
+4 |     let x: i32 = "a";
+  |            ---   ^^^ expected `i32`, found `&str`
+  |            |
+  |            expected due to this
+
+error[E0061]: this function takes 2 arguments but 1 argument was supplied
+ --> src/main.rs:8:20
+  |
+8 |     println!("{}", add(1));
+  |                    ^^^--- argument #2 of type `i32` is missing
+  |
+note: function defined here
+ --> src/main.rs:1:4
+  |
+1 | fn add(a: i32, b: i32) -> i32 { a + b }
+  |    ^^^         ------
+help: provide the argument
+  |
+8 |     println!("{}", add(1, /* i32 */));
+  |                         +++++++++++
+
+warning: unused variable: `unused`
+ --> src/main.rs:9:9
+  |
+9 |     let unused = 5;
+  |         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused`
+
+error[E0425]: cannot find function `undefined_fn` in this scope
+  --> src/main.rs:10:5
+   |
+10 |     undefined_fn();
+   |     ^^^^^^^^^^^^ not found in this scope
+
+Some errors have detailed explanations: E0061, E0308, E0425.
+error: could not compile `demo` (bin "demo") due to 3 previous errors
+"""
+
+
+def test_error_digest_rust_default_format_keeps_location_reason_and_help():
+    assert Verifier.error_digest(RUST_LOG, root="/wt") == [
+        "src/main.rs:4:18: error: E0308: mismatched types (expected `i32`, found `&str`)",
+        "src/main.rs:8:20: error: E0061: this function takes 2 arguments but 1 argument was supplied "
+        "(argument #2 of type `i32` is missing; help: provide the argument)",
+        "src/main.rs:10:5: error: E0425: cannot find function `undefined_fn` in this scope (not found in this scope)",
+        'error: could not compile `demo` (bin "demo") due to 3 previous errors',
+    ]
+
+
+def test_error_digest_rust_short_format():
+    line = "src/main.rs:4:27: error[E0382]: borrow of moved value: `v`: value borrowed here after move"
+    assert Verifier.error_digest("noise\n" + line + "\n") == [
+        "src/main.rs:4:27: error: E0382: borrow of moved value: `v`: value borrowed here after move"]
+
+
+@pytest.mark.skipif(__import__("shutil").which("cargo") is None, reason="cargo not installed")
+def test_verify_real_cargo_build_reports_rust_errors(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "Cargo.toml").write_text('[package]\nname = "demo"\nversion = "0.1.0"\nedition = "2021"\n')
+    (tmp_path / "src/main.rs").write_text('fn main() {\n    let x: i32 = "a";\n}\n')
+    result = Verifier.verify(str(tmp_path), build_cmd="cargo build --offline", git_checks=False)
+    assert result["build_errors"][0].startswith("src/main.rs:2:18: error: E0308: mismatched types (expected `i32`")
+
+
+# 포크 2026-11-15: Kotlin(Gradle)·Next.js·Vite 빌드 실패는 예전 패턴으로 빈 목록이었다.
+# 아래 로그는 실제 next 14.2 / vite 5.4 / tsc 5.6 출력에서 작업본 경로만 /wt로 바꾼 것이다(Kotlin은 공식 형식).
+NEXT_TYPE_LOG = """   Linting and checking validity of types ...
+Failed to compile.
+
+./src/app/page.tsx:4:18
+Type error: Property 'nme' does not exist on type 'User'. Did you mean 'name'?
+
+\x1b[0m \x1b[90m 2 |\x1b[39m \x1b[36mexport\x1b[39m default function Page() {\x1b[0m
+"""
+NEXT_SWC_LOG = """Failed to compile.
+
+./src/app/page.tsx
+Error: 
+  x Expression expected
+   ,-[/wt/src/app/page.tsx:1:1]
+ 1 | export default function Page() {
+ 2 |   const a = ;
+   :             ^
+ 3 |   return <div/>
+   `----
+
+Caused by:
+    Syntax Error
+"""
+NEXT_MODULE_LOG = """Failed to compile.
+
+./src/app/page.tsx
+Module not found: Can't resolve './nope'
+
+https://nextjs.org/docs/messages/module-not-found
+"""
+VITE_ESBUILD_LOG = """x Build failed in 45ms
+error during build:
+[vite:esbuild] Transform failed with 1 error:
+/wt/src/main.ts:2:8: ERROR: Expected ";" but found "x"
+file: /wt/src/main.ts:2:8
+"""
+VITE_RESOLVE_LOG = """error during build:
+Could not resolve "./nope" from "src/main.ts"
+file: /wt/src/main.ts
+"""
+KOTLIN_LOG = """> Task :app:compileDebugKotlin FAILED
+e: file:///wt/app/src/main/java/com/x/MainActivity.kt:12:5 Unresolved reference 'foo'.
+w: file:///wt/app/src/main/java/com/x/MainActivity.kt:30:9 Variable 'y' is never used
+e: /wt/app/src/Old.kt: (7, 3): Type mismatch: inferred type is String but Int was expected
+FAILURE: Build failed with an exception.
+"""
+
+
+@pytest.mark.parametrize("log, expected", [
+    (NEXT_TYPE_LOG, ["src/app/page.tsx:4:18: error: Type error: Property 'nme' does not exist on type 'User'. "
+                     "Did you mean 'name'?"]),
+    (NEXT_SWC_LOG, ["src/app/page.tsx:2: error: Syntax error: Expression expected"]),
+    (NEXT_MODULE_LOG, ["src/app/page.tsx: error: Module not found: Can't resolve './nope'"]),
+    (VITE_ESBUILD_LOG, ['src/main.ts:2:8: error: Expected ";" but found "x"']),
+    (VITE_RESOLVE_LOG, ['src/main.ts: error: Could not resolve "./nope"']),
+    (KOTLIN_LOG, ["app/src/main/java/com/x/MainActivity.kt:12:5: error: Unresolved reference 'foo'.",
+                  "app/src/Old.kt:7:3: error: Type mismatch: inferred type is String but Int was expected"]),
+], ids=["next-type", "next-swc", "next-module", "vite-esbuild", "vite-resolve", "kotlin"])
+def test_error_digest_web_and_android_toolchains(log, expected):
+    assert Verifier.error_digest(log, root="/wt") == expected
+
+
+def test_error_digest_kotlin_windows_file_uri():
+    log = "e: file:///D:/work/app/src/Main.kt:3:18 Initializer type mismatch: expected 'Int', actual 'String'."
+    assert Verifier.error_digest(log, root="D:\\work\\app") == [
+        "src/Main.kt:3:18: error: Initializer type mismatch: expected 'Int', actual 'String'."]
+
+
+def test_error_digest_ignores_plain_relative_path_lines():
+    # a `./path` line is a Next.js header only when an error message follows it
+    assert Verifier.error_digest("./scripts/build.sh\nDone in 2s\n") == []
+
+
+def test_error_digest_coloured_swift_output():
+    # 어디야 scripts/logic-tests.sh(swift build/test)는 색을 입혀 출력한다. 예전 코드는 이것을 하나도 못 읽었다
+    # (RUN-261113200343 등 테스트 0개로 실패한 라운드 6번).
+    esc = "\x1b"
+    log = (f"/c/Tests/EodiyaLogicTests/NearbyStaleClockTests.swift:24:21: {esc}[1;31merror: {esc}[1;39m"
+           f"cannot find 'NearbyStaleClock' in scope{esc}[0;0m\n"
+           f"   {esc}[0;36m|{esc}[0;0m   `- {esc}[1;31merror: {esc}[1;39mcannot find 'NearbyStaleClock' in scope{esc}[0;0m\n")
+    assert Verifier.error_digest(log, root="/c") == [
+        "Tests/EodiyaLogicTests/NearbyStaleClockTests.swift:24:21: error: cannot find 'NearbyStaleClock' in scope"]

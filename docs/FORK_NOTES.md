@@ -284,3 +284,17 @@ Known unrelated on this Mac: `test_v020_provider_ops.py` needs `requests` (colle
 - 대화창 묶음(DASHBOARD_JS): USER 요청 하나가 접히는 묶음 하나(`#번호 · 요청 첫 줄 · 결과(✓ 완료/✗ 실패/⚠ 확인 필요/● 진행) · 프로젝트 · 시각 · 메시지 수`)가 된다. 가장 최근 묶음만 펼쳐 두고(「최근」 표시), 예전 묶음은 접힌다. 프로젝트가 바뀌거나 새 대화가 시작되면 구분 묶음이 생긴다.
 - 도구 줄: [현재 대화]/[전체 기록], 프로젝트 고르기(요청 수 표시), 「요청으로 이동」, [이전 요청 접기]·[모두 펼치기]. 「전체 기록」은 새 GET `/chat/history?project=`(모든 세션, 읽기 전용, 최근 1500개)를 따로 그린다. 실시간 대화창의 폴링·추가 방식은 그대로다.
 - 테스트: `tests/test_fork_chat_turns.py`(5개). `test_v0238 test_1`은 메시지가 묶음 안으로 들어가게 바뀐 것에 맞춰 확인 문구를 고쳤다.
+
+## Rust·Kotlin·Next.js·Vite 컴파일 오류를 Builder에게 제대로 전달 (2026-11-15)
+- **계기**: 대상 프로젝트를 Rust로 하는 방안을 검토하다 확인. rustc 기본 형식은 `error[E0308]: msg` 다음 줄 ` --> path:line:col`에 위치가 있어서, `error_digest`가 마지막 `error: could not compile …` 한 줄만 남겼다. Builder는 어느 파일 몇 번째 줄이 왜 틀렸는지 모른 채 고쳐야 했다.
+- `verifier._RUST_ERR`·`_rust_error`: `error[Exxxx]: msg`(기본 형식)와 `path:line:col: error[Exxxx]: msg`(`--message-format=short`)를 읽는다. 기본 형식은 뒤따르는 ` --> ` 줄을 위치로 붙이고, 첫 주 레이블(`^^^ expected i32, found &str`)과 첫 `help:` 줄을 괄호로 덧붙인다. 다음 진단(error/warning)이 나오면 멈추므로 warning의 help가 섞이지 않는다.
+- 결과 형식: `src/main.rs:4:18: error: E0308: mismatched types (expected `i32`, found `&str`)` (tsc의 `error: TS2322: …`와 같은 모양).
+- 테스트: `tests/test_fork_repair_speed.py`에 3개 추가(기본 형식, short 형식, cargo가 있으면 실제 `cargo build`).
+- 같은 날 사용자 프로젝트(iOS·macOS·웹·나중에 Android) 기준으로 다시 확인한 결과, Kotlin(Gradle)·Next.js·Vite 빌드 실패는 `build_errors`가 **빈 목록**이었다. 실제 next 14.2·vite 5.4·tsc 5.6 출력을 받아 `verifier._toolchain_error`를 추가했다.
+  - Kotlin: 2.x `e: file:///abs/X.kt:12:5 msg`, 1.x `e: /abs/X.kt: (12, 5): msg`, 윈도우 `file:///D:/…`. 경고(`w:`)는 뺀다.
+  - Vite: esbuild `abs:2:8: ERROR: msg`, esbuild CLI `✘ [ERROR] msg`(아래 위치 줄), Rollup `Could not resolve "x" from "src/main.ts"`, 옛 `[vite]: Rollup failed to resolve import`.
+  - Next.js: `./src/app/page.tsx[:줄:칸]` 머리 줄 다음의 `Type error:`·`Module not found:`, SWC 문법 오류(`Error:` → `x msg`, `^` 위의 줄 번호). `next build`의 색 코드(ANSI)는 지운다. 머리 줄 뒤에 오류 문장이 없으면 무시한다.
+  - 윈도우 작업본 경로를 `/` 형태로도 떼어 낸다.
+- 테스트: 같은 파일에 8개 추가(Next 3, Vite 2, Kotlin 2, 오인식 방지 1).
+- 참고: `test_v306…test_resumed_run_with_failed_verification_continues_to_repair`는 이 변경 전에도 3번 중 2번 실패하는 불안정한 테스트다(Linux에서 확인).
+- 색 코드(ANSI)를 지우는 처리 덕분에 **색을 입힌 Swift 오류**도 읽는다. 예전 코드는 어디야 `scripts/logic-tests.sh`의 `path:24:21: \x1b[1;31merror: …`를 하나도 못 읽었다(맥 run 기록 확인). 테스트 1개 추가.
