@@ -4,7 +4,7 @@ import sys
 import shlex
 import shutil
 from pathlib import Path
-from typing import Dict, Any, Optional, Union, List
+from typing import Dict, Any, Optional, Union, List, Tuple
 from core.git_manager import GitManager
 from core.process_runner import ProcessTreeRunner, ProcessResult
 from core.env_utils import get_sanitized_env
@@ -177,6 +177,40 @@ class Verifier:
         re.compile(r"^(?P<loc>)(?:fatal )?error: (?P<msg>.+)$"),
         re.compile(r"^(?P<loc>)(?P<msg>(?:SyntaxError|IndentationError|ModuleNotFoundError|ImportError|NameError): .+)$"),
     )
+    # rustc: `error[E0308]: msg` (location on a following ` --> path:line:col` line) or, with
+    # --message-format=short, `path:line:col: error[E0308]: msg` on one line.
+    _RUST_ERR = re.compile(r"^(?:(?P<loc>[^\s:][^:]*:\d+(?::\d+)?): )?error\[(?P<code>E\d{4})\]: (?P<msg>.+)$")
+    _RUST_LOC = re.compile(r"^-->\s*(?P<loc>.+:\d+(?::\d+)?)$")
+    _RUST_LABEL = re.compile(r"^\d*\s*\|\s*[\s\-|]*\^+[\^\-]*\s*(?P<label>\S.*)$")
+    _RUST_HELP = re.compile(r"^(?:=\s*)?help: (?P<help>.+)$")
+
+    @classmethod
+    def _rust_error(cls, lines: List[str], i: int, m) -> Tuple[str, str]:
+        """`E0308: mismatched types (expected `i32`, found `&str`; help: ...)` plus its location from the
+        ` --> ` line. The detail lines are what tell the Builder how to fix it, so the first primary label and
+        the first help line are kept; the scan stops at the next diagnostic."""
+        loc, msg = m.group("loc") or "", f"{m.group('code')}: {m.group('msg').strip()}"
+        label = help_ = None
+        for raw in lines[i + 1:i + 30]:
+            line = raw.strip()
+            if re.match(r"^(error|warning)(\[|:)", line):
+                break
+            if not loc:
+                lm = cls._RUST_LOC.match(line)
+                if lm:
+                    loc = lm.group("loc")
+                    continue
+            if label is None:
+                lb = cls._RUST_LABEL.match(line)
+                if lb:
+                    label = lb.group("label").strip()
+                    continue
+            if help_ is None:
+                hm = cls._RUST_HELP.match(line)
+                if hm:
+                    help_ = hm.group("help").strip()
+        extra = "; ".join(x for x in (label, f"help: {help_}" if help_ else None) if x)
+        return loc, msg + (f" ({extra})" if extra else "")
 
     @classmethod
     def error_digest(cls, output: str, root: Optional[str] = None, limit: int = 40) -> List[str]:
@@ -191,15 +225,20 @@ class Verifier:
             r = str(root).rstrip("/\\")
             prefixes = [r + "/", r + "\\", str(Path(r).resolve()) + "/"]
         seen, out = set(), []
-        for raw in output.splitlines():
+        lines = output.splitlines()
+        for idx, raw in enumerate(lines):
             line = raw.strip()
             if "error" not in line.lower():
                 continue
-            for pat in cls._ERR_PATTERNS:
+            rust = cls._RUST_ERR.match(line)
+            for pat in ((cls._RUST_ERR,) if rust else cls._ERR_PATTERNS):
                 m = pat.match(line)
                 if not m:
                     continue
-                loc, msg = m.group("loc"), m.group("msg").strip()
+                if rust:
+                    loc, msg = cls._rust_error(lines, idx, m)
+                else:
+                    loc, msg = m.group("loc"), m.group("msg").strip()
                 for p in prefixes:
                     if loc.startswith(p):
                         loc = loc[len(p):]

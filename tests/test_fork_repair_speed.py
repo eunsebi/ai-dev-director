@@ -289,3 +289,72 @@ def test_repair_round_refuses_a_complete_rewrite_of_an_existing_file(tmp_path):
                                          proj, order, repair=True)
     assert set(ok) == {"Src/New.swift", "Src/Feature.swift"}
     assert ProposalBuilder.resolve_changes([{"path": "Src/Feature.swift", "content": "r"}], [], proj, order)
+
+
+# 포크 2026-11-15: rustc 기본 형식은 `error[E0308]: msg` 다음 줄 ` --> path:line:col`에 위치가 있어
+# 예전 패턴으로는 마지막 `error: could not compile` 한 줄만 남았다(빌더가 무엇을 고칠지 모름).
+RUST_LOG = """   Compiling demo v0.1.0 (/wt)
+error[E0308]: mismatched types
+ --> /wt/src/main.rs:4:18
+  |
+4 |     let x: i32 = "a";
+  |            ---   ^^^ expected `i32`, found `&str`
+  |            |
+  |            expected due to this
+
+error[E0061]: this function takes 2 arguments but 1 argument was supplied
+ --> src/main.rs:8:20
+  |
+8 |     println!("{}", add(1));
+  |                    ^^^--- argument #2 of type `i32` is missing
+  |
+note: function defined here
+ --> src/main.rs:1:4
+  |
+1 | fn add(a: i32, b: i32) -> i32 { a + b }
+  |    ^^^         ------
+help: provide the argument
+  |
+8 |     println!("{}", add(1, /* i32 */));
+  |                         +++++++++++
+
+warning: unused variable: `unused`
+ --> src/main.rs:9:9
+  |
+9 |     let unused = 5;
+  |         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_unused`
+
+error[E0425]: cannot find function `undefined_fn` in this scope
+  --> src/main.rs:10:5
+   |
+10 |     undefined_fn();
+   |     ^^^^^^^^^^^^ not found in this scope
+
+Some errors have detailed explanations: E0061, E0308, E0425.
+error: could not compile `demo` (bin "demo") due to 3 previous errors
+"""
+
+
+def test_error_digest_rust_default_format_keeps_location_reason_and_help():
+    assert Verifier.error_digest(RUST_LOG, root="/wt") == [
+        "src/main.rs:4:18: error: E0308: mismatched types (expected `i32`, found `&str`)",
+        "src/main.rs:8:20: error: E0061: this function takes 2 arguments but 1 argument was supplied "
+        "(argument #2 of type `i32` is missing; help: provide the argument)",
+        "src/main.rs:10:5: error: E0425: cannot find function `undefined_fn` in this scope (not found in this scope)",
+        'error: could not compile `demo` (bin "demo") due to 3 previous errors',
+    ]
+
+
+def test_error_digest_rust_short_format():
+    line = "src/main.rs:4:27: error[E0382]: borrow of moved value: `v`: value borrowed here after move"
+    assert Verifier.error_digest("noise\n" + line + "\n") == [
+        "src/main.rs:4:27: error: E0382: borrow of moved value: `v`: value borrowed here after move"]
+
+
+@pytest.mark.skipif(__import__("shutil").which("cargo") is None, reason="cargo not installed")
+def test_verify_real_cargo_build_reports_rust_errors(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "Cargo.toml").write_text('[package]\nname = "demo"\nversion = "0.1.0"\nedition = "2021"\n')
+    (tmp_path / "src/main.rs").write_text('fn main() {\n    let x: i32 = "a";\n}\n')
+    result = Verifier.verify(str(tmp_path), build_cmd="cargo build --offline", git_checks=False)
+    assert result["build_errors"][0].startswith("src/main.rs:2:18: error: E0308: mismatched types (expected `i32`")
