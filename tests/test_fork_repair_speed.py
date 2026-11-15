@@ -433,3 +433,14 @@ def test_error_digest_kotlin_windows_file_uri():
 def test_error_digest_ignores_plain_relative_path_lines():
     # a `./path` line is a Next.js header only when an error message follows it
     assert Verifier.error_digest("./scripts/build.sh\nDone in 2s\n") == []
+
+
+def test_error_digest_coloured_swift_output():
+    # 어디야 scripts/logic-tests.sh(swift build/test)는 색을 입혀 출력한다. 예전 코드는 이것을 하나도 못 읽었다
+    # (RUN-261113200343 등 테스트 0개로 실패한 라운드 6번).
+    esc = "\x1b"
+    log = (f"/c/Tests/EodiyaLogicTests/NearbyStaleClockTests.swift:24:21: {esc}[1;31merror: {esc}[1;39m"
+           f"cannot find 'NearbyStaleClock' in scope{esc}[0;0m\n"
+           f"   {esc}[0;36m|{esc}[0;0m   `- {esc}[1;31merror: {esc}[1;39mcannot find 'NearbyStaleClock' in scope{esc}[0;0m\n")
+    assert Verifier.error_digest(log, root="/c") == [
+        "Tests/EodiyaLogicTests/NearbyStaleClockTests.swift:24:21: error: cannot find 'NearbyStaleClock' in scope"]

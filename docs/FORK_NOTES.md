@@ -297,3 +297,4 @@ Known unrelated on this Mac: `test_v020_provider_ops.py` needs `requests` (colle
   - 윈도우 작업본 경로를 `/` 형태로도 떼어 낸다.
 - 테스트: 같은 파일에 8개 추가(Next 3, Vite 2, Kotlin 2, 오인식 방지 1).
 - 참고: `test_v306…test_resumed_run_with_failed_verification_continues_to_repair`는 이 변경 전에도 3번 중 2번 실패하는 불안정한 테스트다(Linux에서 확인).
+- 색 코드(ANSI)를 지우는 처리 덕분에 **색을 입힌 Swift 오류**도 읽는다. 예전 코드는 어디야 `scripts/logic-tests.sh`의 `path:24:21: \x1b[1;31merror: …`를 하나도 못 읽었다(맥 run 기록 확인). 테스트 1개 추가.
