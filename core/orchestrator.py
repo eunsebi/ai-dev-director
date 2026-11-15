@@ -1049,6 +1049,12 @@ class Orchestrator:
                 except Exception:
                     pass
             elif attempt == 0:
+                # fork 2026-11-15: a HEAD that timed out is not asked again. Mac records 11-08..11-15: 18 Claude HEAD
+                # calls hung to the full timeout with no output (86 of HEAD's 120 minutes), often just before the
+                # 5-hour limit, and five times the same-provider retry hung again (another 5 minutes each). Another
+                # provider decides now; with none available the same HEAD gets its one retry as before.
+                if cat == ErrorCategory.TIMEOUT:
+                    self._swap_agent("head", run_id, logger, tried, "DECIDING", last_err)
                 continue
             if not self._swap_agent("head", run_id, logger, tried, "DECIDING", last_err):
                 break
@@ -1261,17 +1267,27 @@ class Orchestrator:
         limit = int(auto.get('compile_fix_rounds', 2) or 0)
         if not auto.get('enabled') or limit <= 0:
             return verification, builder_result, None
+        def does_not_compile(v):
+            if v.get('passed') or not v.get('build_errors'):
+                return False
+            build = v.get('build') or {}
+            if build.get('executed') and not build.get('passed'):
+                return True
+            # fork 2026-11-15: the test step did not compile (no test ran); see Verifier.verify
+            return v.get('build_errors_source') == 'test'
         done = 0
-        while (done < limit and not verification.get('passed')
-               and (verification.get('build') or {}).get('executed')
-               and not (verification.get('build') or {}).get('passed')
-               and verification.get('build_errors')):
+        while done < limit and does_not_compile(verification):
             done += 1
             errors = verification['build_errors']
-            fix = {'round': done, 'instruction': (
-                       'The code does not compile. Fix exactly these compiler errors with the smallest change that '
-                       'keeps the ORDER goal and every acceptance criterion; do not redesign or drop features.'),
-                   'build_errors': errors}
+            instruction = ('The code does not compile. Fix exactly these compiler errors with the smallest change that '
+                           'keeps the ORDER goal and every acceptance criterion; do not redesign or drop features.')
+            if verification.get('build_errors_source') == 'test':
+                instruction += (' These errors come from the TEST command (the tests did not compile, so none ran). '
+                                'Paths may point into a copy the test script made (e.g. a cache folder, or '
+                                'App/Foo.swift copied as Sources/<Module>/App_Foo.swift): map each one back to the '
+                                'project file. Fix the product code or the new tests; never edit protected paths.')
+            fix = {'round': done, 'instruction': instruction, 'build_errors': errors,
+                   'source': verification.get('build_errors_source') or 'build'}
             base_ctx = (order.context or '').split(self.COMPILE_FIX_MARKER, 1)[0]
             order.context = base_ctx + self.COMPILE_FIX_MARKER + json.dumps(fix, ensure_ascii=False)
             self._save_json(run_id, 'order.json', order)

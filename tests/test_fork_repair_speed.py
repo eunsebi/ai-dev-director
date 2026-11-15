@@ -444,3 +444,68 @@ def test_error_digest_coloured_swift_output():
            f"   {esc}[0;36m|{esc}[0;0m   `- {esc}[1;31merror: {esc}[1;39mcannot find 'NearbyStaleClock' in scope{esc}[0;0m\n")
     assert Verifier.error_digest(log, root="/c") == [
         "Tests/EodiyaLogicTests/NearbyStaleClockTests.swift:24:21: error: cannot find 'NearbyStaleClock' in scope"]
+
+
+# ------------------------------------------------------------------ 포크 2026-11-15: 테스트 단계 컴파일 실패도 빌더에게 바로
+# 맥 run 기록: 어디야 logic-tests.sh(로직을 Swift 패키지로 묶어 swift test)가 컴파일에서 실패해 테스트 0개인 라운드가
+# 11-13 이후 6번 있었고, build_errors가 빌드 단계만 보던 탓에 매번 리뷰+HEAD 판정을 한 바퀴씩 더 돌았다.
+
+def _script(tmp_path, name, body):
+    p = tmp_path / name
+    p.write_text(body)
+    return f"{sys.executable} {p}"
+
+
+def test_verify_takes_compiler_lines_from_a_test_step_that_did_not_compile(tmp_path):
+    test_cmd = _script(tmp_path, "t.py", "import sys\nprint('Compiling...')\n"
+                       "print('/c/Sources/App_Foo.swift:3:9: error: cannot find Bar in scope')\nsys.exit(1)\n")
+    v = Verifier.verify(str(tmp_path), test_cmd=test_cmd, git_checks=False)
+    assert v["build_errors"] == ["/c/Sources/App_Foo.swift:3:9: error: cannot find Bar in scope"]
+    assert v["build_errors_source"] == "test"
+
+
+@pytest.mark.parametrize("body", [
+    # an environment failure with only a bare `error:` line stays with Reviewer/HEAD
+    "import sys\nprint('error: no simulator available')\nsys.exit(1)\n",
+    # tests ran and some failed: a behaviour problem, not a compile problem
+    "import sys\nprint('x.swift:1:2: error: XCTAssertEqual failed')\nprint('1 failed, 3 passed in 0.1s')\nsys.exit(1)\n",
+], ids=["bare-error", "tests-ran"])
+def test_verify_leaves_other_test_failures_to_review(tmp_path, body):
+    v = Verifier.verify(str(tmp_path), test_cmd=_script(tmp_path, "t.py", body), git_checks=False)
+    assert v["build_errors"] == [] and v["build_errors_source"] is None
+
+
+def test_build_failure_still_wins_over_test_output(tmp_path):
+    build = _script(tmp_path, "b.py", "import sys\nprint('a.c:1:1: error: build broke')\nsys.exit(1)\n")
+    test = _script(tmp_path, "t.py", "import sys\nprint('t.swift:2:2: error: test broke')\nsys.exit(1)\n")
+    v = Verifier.verify(str(tmp_path), build_cmd=build, test_cmd=test, git_checks=False)
+    assert v["build_errors"] == ["a.c:1:1: error: build broke"] and v["build_errors_source"] == "build"
+
+
+def orch_with_test_compile(tmp_path, **autonomy):
+    """No build command; the test command 'compiles' feature.py first and runs no test while it contains BROKEN."""
+    script = tmp_path / "fake_logic_tests.py"
+    script.write_text(
+        "import os, subprocess, sys\nt = open('feature.py').read() if os.path.exists('feature.py') else ''\n"
+        "if 'BROKEN' in t:\n    print('/cache/Sources/App/feature.swift:1:5: error: BROKEN is not a token')\n"
+        "    sys.exit(1)\n"
+        f"sys.exit(subprocess.call({PYTEST_CMD!r}, shell=True))\n")
+    auto = {"enabled": True, "max_repairs": 2, "head_proxy": True, "builder_attempts": 3}
+    auto.update(autonomy)
+    return _mock_orch(bootstrap={"enabled": True}, autonomy=auto,
+                      verification={"build_command": None, "test_command": f"{sys.executable} {script}"})
+
+
+def test_test_step_compile_error_goes_straight_back_to_the_builder(tmp_path, monkeypatch):
+    orch = orch_with_test_compile(tmp_path)
+    quiet(monkeypatch, orch)
+    calls, reviews = [], []
+    broken = dict(GOOD, **{"feature.py": "def double(x):\n    return x * 2  # BROKEN\n"})
+    monkeypatch.setattr(orch.builder, "run", builder_sequence(calls, [broken, GOOD]))
+    counting_review(monkeypatch, orch, reviews)
+    out = orch.run(str(tmp_path / "proj"), "double", order=OrderSchema(**ORDER))
+    assert out["final_state"] == State.PASS
+    assert len(calls) == 2 and "COMPILE FIX ORDER" in calls[1]
+    assert "BROKEN is not a token" in calls[1] and "TEST command" in calls[1]
+    assert len(reviews) == 1 and reviews[0]["passed"]           # the non-compiling tests never reached review
+    assert orch._load_json(out["run_id"], "repair_history.json") is None

@@ -298,3 +298,12 @@ Known unrelated on this Mac: `test_v020_provider_ops.py` needs `requests` (colle
 - 테스트: 같은 파일에 8개 추가(Next 3, Vite 2, Kotlin 2, 오인식 방지 1).
 - 참고: `test_v306…test_resumed_run_with_failed_verification_continues_to_repair`는 이 변경 전에도 3번 중 2번 실패하는 불안정한 테스트다(Linux에서 확인).
 - 색 코드(ANSI)를 지우는 처리 덕분에 **색을 입힌 Swift 오류**도 읽는다. 예전 코드는 어디야 `scripts/logic-tests.sh`의 `path:24:21: \x1b[1;31merror: …`를 하나도 못 읽었다(맥 run 기록 확인). 테스트 1개 추가.
+
+## 테스트 단계 컴파일 실패는 빌더 직행, 시간 초과한 HEAD는 다시 묻지 않기 (2026-11-15)
+- **계기**: 맥 run 기록 분석(`data/director.db`의 ai_usage, 11-08~11-15: 호출 234번·196분·토큰 626만).
+  - HEAD가 시간의 61%(120분)를 썼고, 그중 **86분이 Claude HEAD 호출 18번의 무출력 시간 초과**였다. 정상 HEAD 응답은 평균 28초·최대 93초다. 5시간 한도 직전에 자주 멈췄고(시간 초과 바로 뒤 USAGE_LIMIT), 판정은 첫 실패가 시간 초과여도 같은 공급자로 한 번 더 물어서 **두 번 연속 멈춘 경우가 5번**(한 번에 5분씩)이었다.
+  - 수정 라운드 43번 중 16번은 테스트가 하나도 돌지 못한 상태였다. 11-13 이후 6번은 어디야 `scripts/logic-tests.sh`(로직을 Swift 패키지로 묶어 `swift test`)가 컴파일에서 실패한 경우인데, `build_errors`가 빌드 단계 출력만 봐서 컴파일 수정 경로를 타지 못하고 리뷰와 HEAD 판정을 한 바퀴씩 더 돌았다.
+- `Verifier.verify`: 빌드는 통과(또는 빌드 명령 없음)했는데 테스트가 실패했고 **테스트가 0개**면 테스트 출력에서 컴파일러 줄을 뽑아 `build_errors`에 넣고 `build_errors_source = "test"`로 표시한다. 파일 위치가 붙은 오류가 하나도 없으면(예: `error: no simulator`) 넣지 않는다. 테스트가 돌고 일부가 실패한 경우는 그대로 리뷰·HEAD가 본다.
+- `Orchestrator._compile_fix_rounds`: `build_errors_source == "test"`도 컴파일 수정으로 처리한다(리뷰·HEAD 없이 빌더 직행, `compile_fix_rounds` 상한·변화 없으면 중단은 그대로). 지시문에 "테스트 명령의 오류이고, 경로는 테스트 스크립트가 만든 사본(캐시 폴더, `App/Foo.swift` → `Sources/<모듈>/App_Foo.swift`)일 수 있으니 프로젝트 파일로 되짚어라"를 덧붙인다.
+- `Orchestrator._run_decision_autonomous`·`MissionRunner._plan`: 첫 시도가 **시간 초과**면 같은 HEAD에 다시 묻지 않고 바로 다른 공급자로 넘긴다(빌더는 11-08부터 이렇게 했다). 넘길 공급자가 없으면 예전처럼 같은 HEAD에 한 번 더 묻는다. 다른 오류(JSON 깨짐 등)는 예전처럼 같은 공급자로 한 번 더 시도한다.
+- 테스트: `tests/test_fork_repair_speed.py`에 5개(테스트 단계 컴파일), `tests/test_fork_head_timeout.py` 4개(판정 3·미션 계획 1). 새 동작 테스트는 예전 코드에서 실패하는 것을 확인했다.

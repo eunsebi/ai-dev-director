@@ -383,7 +383,11 @@ class MissionRunner:
             except Exception as exc:
                 err = str(exc)[:300]
             orch.sm.log_audit(last_run, "ORCHESTRATOR", "MISSION_PLAN_RETRY", f"attempt {attempt + 1}: {err}")
-            if attempt >= 1 and not orch._swap_agent("head", last_run, _NullLogger(), tried, "MISSION_PLANNING", err):
+            if attempt == 0 and _timed_out(orch, err):
+                # fork 2026-11-15: a planner that hung is not asked again (see Orchestrator._run_decision_autonomous);
+                # with no other provider the same HEAD gets its one retry as before.
+                orch._swap_agent("head", last_run, _NullLogger(), tried, "MISSION_PLANNING", err)
+            elif attempt >= 1 and not orch._swap_agent("head", last_run, _NullLogger(), tried, "MISSION_PLANNING", err):
                 break
         return {"status": "STALLED", "reason": err, "summary": ""}
 
@@ -494,6 +498,14 @@ class MissionRunner:
             why = "; ".join(result.get("blocks") or []) or result.get("reason") or result.get("error") or result.get("status")
             self.notify(f"결과물을 자동 적용하지 않았습니다 ({result.get('status')}): {str(why)[:400]}. "
                         f"작업본: {mission.get('base_worktree')}", run_id=rid)
+
+
+def _timed_out(orch, err: Optional[str]) -> bool:
+    try:
+        from core.provider_manager import ErrorCategory
+        return orch.pm.classify_error(err or "") == ErrorCategory.TIMEOUT
+    except Exception:
+        return "TIMEOUT" in (err or "").upper()
 
 
 class _NullLogger:
