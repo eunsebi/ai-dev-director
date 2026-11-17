@@ -186,11 +186,13 @@ class ProposalBuilder(AntigravityBuilder):
         prompt = ('You are the implementation Builder. Do not use tools. All source context is supplied below. '
                   'Return ONLY JSON: {"files":[{"path":"relative/file.py","content":"complete file contents"}],'
                   '"edits":[{"path":"existing/file.py","old":"exact text copied from that file","new":"replacement text"}],'
-                  '"summary":"..."}. Prefer "edits" for changes to existing files - each "old" must appear EXACTLY ONCE in '
+                  '"deletes":["existing/file/to/remove"],"summary":"..."}. Prefer "edits" for changes to existing files - each "old" must appear EXACTLY ONCE in '
                   'the file as shown below (copy it verbatim with indentation, long enough to be unique); use "files" for '
                   'new files or complete rewrites. Keep the reply compact. '
                   'Implement the ORDER and real behavior tests. Preserve existing behavior. No placeholder implementations. '
-                  'Return only changed files. No deletion operations. Stay within file and diff budgets. '
+                  'Return only changed files. "deletes" removes whole files and is accepted ONLY for paths listed in '
+                  'ORDER.allowed_deletions (anything else rejects the whole reply); omit it otherwise. '
+                  'Stay within file and diff budgets. '
                   'HEAD feedback and outstanding reviewer findings in context must be resolved. '
                   'Director host Python is ' + sys.version.split()[0] + '; platform is ' + sys.platform +
                   '. Honor any project-specific runtime requirements in the ORDER.\nORDER:\n' + order.model_dump_json() +
@@ -240,20 +242,26 @@ class ProposalBuilder(AntigravityBuilder):
             raise ValueError('Builder must return a JSON object')
         files = proposal.get('files') or []
         edits = proposal.get('edits') or []
-        if not isinstance(files, list) or not isinstance(edits, list):
+        deletes = proposal.get('deletes') or []
+        if not isinstance(files, list) or not isinstance(edits, list) or not isinstance(deletes, list):
             raise ValueError('Builder must return a bounded nonempty files list')
-        if not files and not edits and any(m in (order.context or '') for m in ('HEAD REPAIR ORDER', 'COMPILE FIX ORDER')):
+        if not files and not edits and not deletes and any(m in (order.context or '') for m in ('HEAD REPAIR ORDER', 'COMPILE FIX ORDER')):
             # In a correction round "nothing needs to change" is a legitimate answer: the Director re-verifies and the
             # Reviewer/HEAD judge the existing changes again (the repair budget bounds this).
             return BuilderResultSchema(status='COMPLETED', files_modified=[], commands_run=[result['invocation']],
                                        summary='No further changes proposed: ' + str(proposal.get('summary', ''))[:500])
         new_contents = self.resolve_changes(files, edits, root, order, repair=repair)
-        if not new_contents or len(new_contents) > order.max_files_changed:
+        removals = self.resolve_deletes(deletes, root, order, new_contents)
+        if not (new_contents or removals) or len(new_contents) + len(removals) > order.max_files_changed:
             raise ValueError('Builder must return a bounded nonempty files list')
-        # The complete batch was validated (paths, exact edit anchors) before the first file is written.
+        # The complete batch was validated (paths, exact edit anchors, permitted deletions) before the first write.
         for rel, content in new_contents.items():
             self.pre_tool_write_file(rel, content, str(root), order)
-        return BuilderResultSchema(status='COMPLETED', files_modified=list(new_contents),
+        for rel in removals:
+            (Path(root) / rel).unlink()
+        if removals:
+            self.last_execution_info['deleted_files'] = list(removals)
+        return BuilderResultSchema(status='COMPLETED', files_modified=list(new_contents) + list(removals),
                                    commands_run=[result['invocation']], summary=proposal.get('summary', 'Files implemented'))
 
     EDITABLE_BUDGET = 140_000
@@ -422,17 +430,20 @@ class ProposalBuilder(AntigravityBuilder):
         snippets = self.error_snippets(defects, root)
         order_brief = {'goal': order.goal, 'acceptance_criteria': order.acceptance_criteria,
                        'allowed_paths': order.allowed_paths, 'protected_paths': order.protected_paths,
+                       'allowed_deletions': order.allowed_deletions,
                        'max_files_changed': order.max_files_changed}
         prompt = (
             'You are the implementation Builder in a REPAIR round. Do not use tools. '
             'The ORDER was already implemented in earlier rounds: that work is in the files below. '
             'Do NOT re-implement, restructure or rewrite anything. Fix ONLY the DEFECTS listed, with the smallest '
             'possible change. Return ONLY JSON: {"edits":[{"path":"existing/file","old":"exact text copied from that '
-            'file","new":"replacement text"}],"files":[{"path":"new/file","content":"..."}],"summary":"..."}. '
+            'file","new":"replacement text"}],"files":[{"path":"new/file","content":"..."}],'
+            '"deletes":["existing/file/to/remove"],"summary":"..."}. '
             'Use "edits" for every existing file (each "old" must appear EXACTLY ONCE, copied verbatim with indentation; '
             'line numbers in ERROR CONTEXT are NOT part of the file). Use "files" only for a genuinely new file. '
             'Keep every acceptance criterion and existing behavior. If a defect can only be fixed in a file you may not '
-            'write, change nothing for it and name that file in summary. '
+            'write, change nothing for it and name that file in summary. A defect that asks to delete a whole file '
+            'is fixed with "deletes" (only paths in allowed_deletions; anything else rejects the reply). '
             'Director host Python is ' + sys.version.split()[0] + '; platform is ' + sys.platform + '.'
             + '\nDEFECTS TO FIX (in priority order):\n' + json.dumps(defects, ensure_ascii=False, indent=1)
             + ('\nERROR CONTEXT (numbered lines, > marks the error line):\n' + '\n'.join(snippets) if snippets else '')
@@ -446,6 +457,43 @@ class ProposalBuilder(AntigravityBuilder):
         result = self._invoke_and_apply(prompt, order, root, repair=True)
         self.last_execution_info['repair_focus'] = {'defects': len(defects), 'focus': focus, 'prompt_chars': len(prompt)}
         return result
+
+    @staticmethod
+    def resolve_deletes(deletes, root, order, new_contents=None):
+        """Whole-file deletions -> [relative path]. Accepted only for an existing regular file named exactly in
+        ORDER.allowed_deletions (symbol entries such as 'def:foo' never authorize a file), never a protected or
+        control-plane path, and never a file the same reply also writes. Any other entry rejects the whole batch,
+        like a denied write: the post-build scope guard would refuse it anyway, after a wasted verification."""
+        root = Path(root).resolve()
+        def norm(p):
+            p = str(p).replace('\\', '/').strip()
+            while p.startswith('./'):
+                p = p[2:]
+            return p
+        # symbol entries ('def:foo', 'class:Bar') authorize symbol removals only, never a whole file
+        permitted = {norm(p) for p in (order.allowed_deletions or [])
+                     if not (':' in str(p) and '/' not in str(p) and '\\' not in str(p))}
+        written = {k.casefold() for k in (new_contents or {})}
+        out = []
+        for item in deletes:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError('Invalid delete entry: a relative file path is required')
+            rel = norm(item)
+            if rel not in permitted:
+                raise ValueError(f'Proposed deletion denied: {rel} is not listed in ORDER.allowed_deletions')
+            if rel.casefold() in written or rel in out:
+                raise ValueError(f'Proposed deletion denied: {rel} is also written or listed twice')
+            if SafetyPolicy.is_control_plane_path(rel) or SafetyPolicy.is_path_protected(rel, order.protected_paths):
+                raise ValueError(f'Proposed deletion denied: {rel} is protected')
+            target = root / rel
+            if target.is_symlink() or not target.is_file():
+                raise ValueError(f'Proposed deletion denied: {rel} is not an existing regular file')
+            try:
+                target.resolve().relative_to(root)
+            except ValueError:
+                raise ValueError(f'Proposed deletion denied: {rel} is outside the worktree')
+            out.append(rel)
+        return out
 
     @staticmethod
     def resolve_changes(files, edits, root, order, repair=False):

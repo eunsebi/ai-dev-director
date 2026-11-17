@@ -320,3 +320,25 @@ Known unrelated on this Mac: `test_v020_provider_ops.py` needs `requests` (colle
 - 미션에 속한 run(`runs/<run>/mission_base.json`)의 단계 실패는 미션 메시지가 대신하므로 디스코드에 두 번 보내지 않는다(맥 배너는 그대로).
 - 설정(로컬 `config.yaml`, 커밋하지 않음): `alerts.discord_webhook`에 디스코드 웹후크 주소(또는 `DIRECTOR_DISCORD_WEBHOOK` 환경 변수). 보낼 종류를 줄이려면 `alerts.discord_events: [mission_end, apply]`처럼 적는다(없으면 전부).
 - 테스트: `tests/test_fork_discord_mission_alerts.py` 6개.
+
+## 2026-11-17 · Builder can delete files; same blocking finding stops the repair loop (`feat/builder-deletes`)
+
+Problem: in the ClipGuard M1 mission the Builder had created a root `Package.swift`, the reviewer required deleting it
+(P1), and HEAD put it in `allowed_deletions` — but the proposal Builder's reply format had no delete operation and the
+prompt said "No deletion operations". The same ORDER went round three mission steps (each with up to three correction
+rounds) until the mission was BLOCKED, spending tokens for nothing.
+
+Changes:
+- `agents/proposal_builder.py` — replies may carry `"deletes": ["path"]` (full and repair prompts both say so).
+  `resolve_deletes` accepts a path only when it is listed verbatim in `ORDER.allowed_deletions` (symbol entries such as
+  `def:foo` never authorize a file), is an existing regular file inside the worktree, is not protected / control
+  plane, and is not also written in the same reply; anything else rejects the whole reply before any write.
+  Deletions count toward `max_files_changed`, appear in `files_modified`, and are recorded as
+  `last_execution_info.deleted_files`. The post-build scope guard (`SafetyPolicy`, `allowed_deletions`) is unchanged.
+- `core/orchestrator.py` — `repeated_blocking_findings`: when a correction round ends with P0/P1 findings that all
+  repeat the previous round's (same text, or reworded with similarity >= 0.6), the run stops with
+  `REPAIR_REPEATED_FINDINGS` instead of spending the remaining repair budget; the mission planner re-plans.
+- `core/failure_reason.py` — Korean text for the two new reasons.
+
+Tests: `tests/test_fork_builder_deletes.py` (15). `test_v306…::test_unresolved_review_after_budget_is_fail_not_human`
+now expects 2 builder calls (the identical P1 stops after one correction round).

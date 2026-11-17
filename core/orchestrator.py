@@ -1,10 +1,11 @@
 import os
+import re
 import json
 import shutil
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, List, Optional, Callable
 
 from core.state_machine import StateMachine, State, TERMINAL_STATES
 from core.git_manager import GitManager
@@ -1313,6 +1314,30 @@ class Orchestrator:
                 return verification, builder_result, stop
         return verification, builder_result, None
 
+    REPEAT_SIMILARITY = 0.6
+
+    @classmethod
+    def repeated_blocking_findings(cls, rounds, review_result) -> List[str]:
+        """The current P0/P1 findings when every one of them already blocked the previous correction round (same
+        text, or reworded: similarity >= REPEAT_SIMILARITY). Empty when there was no correction round yet, when
+        there are no blocking findings, or when any finding is new (the round made the review move on)."""
+        if not rounds:
+            return []
+        current = [str(x) for x in (list(getattr(review_result, 'p0', None) or [])
+                                     + list(getattr(review_result, 'p1', None) or []))]
+        prev_review = (rounds[-1] or {}).get('review') or {}
+        previous = [str(x) for x in (prev_review.get('p0') or []) + (prev_review.get('p1') or [])]
+        if not current or not previous:
+            return []
+        import difflib
+        squash = lambda t: re.sub(r'[\s`\'".,:;()\[\]]+', ' ', t).strip().casefold()
+        prev_n = [squash(p) for p in previous]
+        for item in current:
+            n = squash(item)
+            if not any(n == p or difflib.SequenceMatcher(None, n, p).ratio() >= cls.REPEAT_SIMILARITY for p in prev_n):
+                return []
+        return current
+
     def _finalize(self, run_id: str, decision: DecisionSchema, review_result: ReviewResultSchema, logger: logging.Logger,
                   provenance_records: list, order=None, builder_result=None, verification=None, worktree_path=None) -> Dict[str, Any]:
         if (self._proxy() and decision.decision == "HUMAN_REQUIRED"
@@ -1331,6 +1356,14 @@ class Orchestrator:
                 and (decision.decision == 'FAIL' or not verification.get('passed')
                      or review_result.verdict != 'pass' or review_result.p0 or review_result.p1)):
             rounds = self._load_json(run_id, 'repair_history.json') or []
+            repeated = self.repeated_blocking_findings(rounds, review_result)
+            if repeated:
+                # The last correction round left the same blocking findings: another round with the same ORDER
+                # gives the same answer and only spends tokens. Stop so the mission planner re-plans.
+                return self._stop(run_id, State.FAIL,
+                                  f'REPAIR_REPEATED_FINDINGS: correction round {len(rounds)} left the same blocking '
+                                  f'review finding(s): {"; ".join(repeated)[:800]}',
+                                  logger, provenance_records, 'REPAIR_REPEATED_FINDINGS')
             if len(rounds) < self.config.get('autonomy', {}).get('max_repairs', 3):
                 feedback = {'round': len(rounds) + 1, 'head': decision.model_dump(),
                             'review': review_result.model_dump(), 'verification': verification}

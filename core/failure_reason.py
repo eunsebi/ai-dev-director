@@ -218,6 +218,8 @@ _KO_PHRASES = [
     (r"\bbuild passed\b", "빌드 통과"),
     (r"\bno tests configured\b", "설정된 테스트 없음"),
     (r"REPAIR_NO_PROGRESS:?\s*", "고치기 진전 없음: "),
+    (r"REPAIR_REPEATED_FINDINGS:?\s*", "같은 지적 반복으로 고치기 중단: "),
+    (r"Proposed deletion denied:\s*", "허용되지 않은 파일 삭제 제안: "),
     (r"No usable provider", "쓸 수 있는 AI 없음"),
 ]
 
