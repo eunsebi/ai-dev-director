@@ -23,6 +23,8 @@ const SHORT={CHAT:'요청 확인 중',MISSION_PLANNING:'다음 단계 계획 중
 const STATE_KO={PASS:'통과',FAIL:'실패',TIMEOUT:'시간 초과',HUMAN_REQUIRED:'확인 필요',RECOVERED:'복구 완료'};
 const STEP_CLASS={PASS:'ok',RECOVERED:'ok',FAIL:'bad',TIMEOUT:'bad',HUMAN_REQUIRED:'warn'};
 const MISSION_BADGE={DONE:['완료','ok'],INCOMPLETE:['예산 소진','warn'],BLOCKED:['확인 필요','warn'],FAILED:['실패','bad']};
+// fork 2026-11-17: INCOMPLETE covers two endings - the step budget ran out, or HEAD could not plan the next step
+function missionBadge(ms){if(ms.status==='INCOMPLETE'&&String(ms.blocked_reason||'').startsWith('HEAD could not plan'))return['계획 실패','warn'];return MISSION_BADGE[ms.status]||[ms.status,''];}
 const PULSE={ok:[.35,1,.7],bad:[1,.32,.4],warn:[1,.78,.4],done:[1,.93,.75]};
 
 let activity=null,status=null,win=null,winAuto=true,replay=null,lastModel=null,center=null,timerBase=null;
@@ -188,7 +190,7 @@ function liveModel(){
   const today=(usage.today&&usage.today.by_provider)||{},stats={};
   for(const p of Object.keys(AI))stats[p]=today[p]?'오늘 '+today[p].calls+'회 · '+(today[p].exact_tokens<today[p].tokens?'~':'')+tok(today[p].tokens)+' 토큰':'오늘 호출 없음';
   return {mode:'live',working,assign:assignment(),...phaseOf(working,verifying,!!(focus&&focus.live)),
-    mission:focus&&{goal:focus.goal,project:focus.project,status:focus.status,live:focus.live,max:Math.max(focus.max_steps||0,focus.steps.length),
+    mission:focus&&{goal:focus.goal,project:focus.project,status:focus.status,blocked_reason:focus.blocked_reason,live:focus.live,max:Math.max(focus.max_steps||0,focus.steps.length),
       steps:focus.steps.map(s=>({index:s.index,state:s.state,tests:s.tests})),passed:focus.passed_steps,updated:utc(focus.updated_at),id:focus.mission_id,
       deliverable:focus.deliverable,applied:focus.applied,applyState:focus.apply_state,source:focus.source,profile:focus.profile,delivery:focus.delivery},
     usage:usage[win]||{by_role:{},by_provider:{},total:{calls:0,seconds:0,tokens:0,exact_tokens:0}},windows:{mission:!!usage.mission,today:!!usage.today,all:!!usage.all},
@@ -212,7 +214,7 @@ function paintNow(m){
   document.documentElement.style.setProperty('--actor',actorColor(m));
   setSentence($('now-headline'),m);setSentence($('caption'),m);
   const ms=m.mission,step=ms&&ms.steps.length?ms.steps[ms.steps.length-1].index:0;
-  $('now-sub').textContent=m.phase==='IDLE'?(ms?'마지막 미션 '+(MISSION_BADGE[ms.status]||[ms.status])[0]+' · '+ago(ms.updated):'아래 입력창에 지시하면 세 AI가 일을 시작합니다.')
+  $('now-sub').textContent=m.phase==='IDLE'?(ms?'마지막 미션 '+missionBadge(ms)[0]+' · '+ago(ms.updated):'아래 입력창에 지시하면 세 AI가 일을 시작합니다.')
     :(ms&&(ms.live||m.mode==='replay')?'미션 '+step+'/'+ms.max+'단계 · '+ms.project:PHASE[m.phase].sub);
   $('now-stage').textContent=m.w?ROLE_KO[m.w.role]||m.w.role:PHASE[m.phase].word;
   timerBase=m.w?{at:m.w.at,fixed:m.mode==='replay'?m.w.elapsed:null}:null;tickTimer();
@@ -234,7 +236,7 @@ function tickTimer(){
 function paintMission(m){
   const ms=m.mission,badge=$('mission-badge'),steps=$('mission-steps');
   if(!ms){badge.textContent='—';badge.className='badge';$('mission-goal').textContent='아직 미션 기록이 없습니다. 지시를 보내면 여기에 단계별 진행이 표시됩니다.';steps.replaceChildren();$('mission-meta').textContent='';return;}
-  const running=ms.status==='RUNNING',b=running?(ms.live?['진행 중','run']:['중단됨 · 재개 대기','warn']):(MISSION_BADGE[ms.status]||[ms.status,'']);
+  const running=ms.status==='RUNNING',b=running?(ms.live?['진행 중','run']:['중단됨 · 재개 대기','warn']):missionBadge(ms);
   badge.textContent=b[0];badge.className='badge '+b[1];$('mission-goal').textContent=ms.goal;
   while(steps.children.length>ms.max)steps.lastChild.remove();
   while(steps.children.length<ms.max)steps.append(el('span',String(steps.children.length+1)));
@@ -495,7 +497,7 @@ function replayTick(){
   for(const p of Object.keys(AI)){const b=usage.by_provider[p];stats[p]=b?b.calls+'회 · '+tok(b.tokens)+' 토큰':'';}
   const finished=vt>=r.total;
   paint({mode:'replay',working,assign:assignment(),...phaseOf(working,verifying,!finished),
-    mission:{goal:r.data.goal,project:r.data.project,status:finished?r.data.status:'RUNNING',live:!finished,max:Math.max(r.data.max_steps||0,(r.data.steps||[]).length),steps,
+    mission:{goal:r.data.goal,project:r.data.project,status:finished?r.data.status:'RUNNING',blocked_reason:r.data.blocked_reason,live:!finished,max:Math.max(r.data.max_steps||0,(r.data.steps||[]).length),steps,
       passed:steps.filter(s=>s.state==='PASS').length,updated:Date.now(),id:'replay'},
     usage,windows:{},calls:done.slice(-6).reverse().map(c=>({key:'d'+c.v0,role:c.role,provider:c.provider,seconds:c.dur,tokens:c.tokens,exact:c.exact,status:c.status,when:'기록'})),
     events:r.events.slice(0,7),stats,project:r.data.project});
