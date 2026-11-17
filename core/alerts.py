@@ -82,10 +82,10 @@ def _due(key: str) -> bool:
         return True
 
 
-def notify(title: str, message: str, key: str) -> bool:
+def notify(title: str, message: str, key: str, discord: bool = True) -> bool:
     if _testing():
         return False
-    mac, hook = enabled(), discord_webhook()
+    mac, hook = enabled(), (discord_webhook() if discord else "")
     if not (mac or hook) or not _due(key):
         return False
     sent = False
@@ -112,11 +112,78 @@ def call_failed(provider_name: str, role: str, why: dict) -> None:
         pass
 
 
+def _in_mission(run_id: str) -> bool:
+    return bool(run_id) and (Path(__file__).resolve().parent.parent / "runs" / run_id / "mission_base.json").exists()
+
+
 def step_failed(run_id: str, to_state: str, details: str) -> None:
     try:
         from core.failure_reason import classify_step
         why = classify_step(to_state, details or "")
+        # a mission step's outcome is announced by mission_event (with the mission, project and step), so Discord
+        # gets it once; the Mac banner stays as it was
         notify(f"AI DEV DIRECTOR · 작업 단계 {'확인 필요' if to_state == 'HUMAN_REQUIRED' else '실패'}",
-               f"{why['label']} — {why['hint']}", f"step:{why['code']}:{why.get('cause')}")
+               f"{why['label']} — {why['hint']}", f"step:{why['code']}:{why.get('cause')}",
+               discord=not _in_mission(run_id))
     except Exception:
         pass
+
+
+# ------------------------------------------------------------------ mission progress (fork 2026-11-17)
+# Missions run for many minutes; without the console open nobody saw that one finished, failed or paused for the
+# usage limit. Each event goes to the Discord webhook (and, for the end of a mission, the Mac banner).
+# config.yaml `alerts.discord_events` picks which kinds are sent; by default all of them.
+MISSION_EVENTS = ("mission_start", "step", "mission_end", "apply", "stopped")
+
+
+def discord_events() -> set:
+    try:
+        import yaml
+        with open(CONFIG, encoding="utf-8") as f:
+            chosen = ((yaml.safe_load(f) or {}).get("alerts") or {}).get("discord_events")
+    except Exception:
+        chosen = None
+    if not isinstance(chosen, list):
+        return set(MISSION_EVENTS)
+    return {str(c) for c in chosen} & set(MISSION_EVENTS)
+
+
+def _elapsed(created_at: str) -> str:
+    try:
+        from datetime import datetime
+        minutes = int((datetime.utcnow() - datetime.fromisoformat(str(created_at))).total_seconds() // 60)
+    except Exception:
+        return ""
+    return f"{minutes // 60}시간 {minutes % 60}분" if minutes >= 60 else f"{max(minutes, 0)}분"
+
+
+def mission_event(kind: str, mission: dict, title: str, lines, dedupe: str = "", mac: bool = False) -> bool:
+    """One mission progress message: `title · project`, the given lines, then elapsed time and the mission id.
+    `dedupe` keeps a resumed mission from announcing the same step twice. Never raises."""
+    try:
+        if _testing() or not isinstance(mission, dict):
+            return False
+        hook = discord_webhook() if kind in discord_events() else ""
+        mac = mac and enabled()
+        if not (hook or mac):
+            return False
+        mission_id = str(mission.get("mission_id") or "")
+        if not _due(f"mission:{mission_id}:{kind}:{dedupe}"):
+            return False
+        project = Path(str(mission.get("project_path") or "")).name or "프로젝트"
+        body = [str(x) for x in (lines or []) if x]
+        tail = " · ".join(x for x in (_elapsed(mission.get("created_at")) and "경과 " + _elapsed(mission.get("created_at")),
+                                      mission_id) if x)
+        if hook:
+            threading.Thread(target=_post_discord, args=(hook, f"{title} · {project}", "\n".join(body + [tail])),
+                             daemon=True).start()
+        if mac:
+            script = (f"display notification {_quote(body[0] if body else title)} "
+                      f"with title {_quote(title + ' · ' + project)} sound name \"Glass\"")
+            try:
+                subprocess.Popen(["osascript", "-e", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except OSError:
+                pass
+        return True
+    except Exception:
+        return False
