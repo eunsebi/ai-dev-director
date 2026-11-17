@@ -372,6 +372,18 @@ class ResultManager:
         return {"status": "ok", "path": path}
 
     # ------------------------------------------------------------------ preconditions + manifest
+    def reviewer_accepts(self, run_id: str, ev: Dict[str, Any]) -> bool:
+        """The reviewer side of the apply gate. 'pass' always; otherwise only the run the final gate already passed
+        with minor (P2) findings left (fork 2026-11-08 HEAD proxy: HEAD PASS + green verification + no P0/P1):
+        review.json must exist and carry no P0/P1, and HEAD must have decided PASS. Without this a P2-only PASS run
+        could never be applied ("final_evidence is missing or not fully PASS")."""
+        if ev.get("reviewer_verdict") == "pass":
+            return True
+        review = self._load(run_id, "review.json")
+        if not isinstance(review, dict) or review.get("p0") or review.get("p1"):
+            return False
+        return ev.get("head_decision") == "PASS"
+
     def preconditions(self, run_id: str) -> Dict[str, Any]:
         blocks: List[str] = []
         run = self.sm.get_run(run_id)
@@ -384,7 +396,7 @@ class ResultManager:
         if st in (RESULT_APPLIED, RESULT_DISCARDED):
             blocks.append(f"Result already {st}")
         ev = self._load(run_id, "final_evidence.json") or {}
-        if not ev or ev.get("reasons") or ev.get("canonical_containment") != "PASS" or ev.get("verification") != "PASS" or ev.get("baseline") != "PASS" or ev.get("regression") != "PASS" or ev.get("reviewer_verdict") != "pass":
+        if not ev or ev.get("reasons") or ev.get("canonical_containment") != "PASS" or ev.get("verification") != "PASS" or ev.get("baseline") != "PASS" or ev.get("regression") != "PASS" or not self.reviewer_accepts(run_id, ev):
             blocks.append("final_evidence is missing or not fully PASS")
         if not wt or not Path(wt).exists():
             blocks.append("Worktree missing")
@@ -689,7 +701,7 @@ class ResultManager:
         if st in (RESULT_APPLIED, RESULT_DISCARDED):
             blocks.append(f"Result already {st}")
         ev = self._load(run_id, "final_evidence.json") or {}
-        if not ev or ev.get("reasons") or ev.get("canonical_containment") != "PASS" or ev.get("verification") != "PASS" or ev.get("baseline") != "PASS" or ev.get("regression") != "PASS" or ev.get("reviewer_verdict") != "pass":
+        if not ev or ev.get("reasons") or ev.get("canonical_containment") != "PASS" or ev.get("verification") != "PASS" or ev.get("baseline") != "PASS" or ev.get("regression") != "PASS" or not self.reviewer_accepts(run_id, ev):
             blocks.append("final_evidence is missing or not fully PASS")
         if not wt or not Path(wt).exists():
             blocks.append("Worktree missing")
