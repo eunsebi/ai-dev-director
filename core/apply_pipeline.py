@@ -42,6 +42,7 @@ State lives in the mission JSON under `delivery`, so a manual check survives a d
 """
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -51,6 +52,27 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 KST = timezone(timedelta(hours=9))
+_SENTENCE_END = re.compile(r"(?<=[.!?。])\s+")
+# Korean request endings of a Discord/HEAD instruction: "…만들어줘", "…고쳐 주세요", "…추가해줘."
+_REQUEST_TAIL = re.compile(r"\s*(?:을|를)?\s*(만들어|구현해|추가해|고쳐|수정해|진행해|작성해|정리해|바꿔|넣어|해)\s?"
+                           r"(?:줘|주세요|줄래|줘요|주라)\s*[.!?。~]*\s*$")
+# what the request verb did, as a noun ("만들어줘" needs none: the object is the feature itself)
+_REQUEST_NOUN = {"추가해": "추가", "넣어": "추가", "고쳐": "수정", "수정해": "수정", "작성해": "작성", "정리해": "정리",
+                 "바꿔": "변경"}
+
+
+def title_from_goal(line: str) -> str:
+    """Commit / devlog title from the mission goal's first line: its first sentence without the request ending.
+    'ClipGuard M2b-1 영상 분석 만들어줘. docs/… 명세대로, …' -> 'ClipGuard M2b-1 영상 분석'. A goal that is already
+    a plain statement is kept as it is; a result too short to mean anything falls back to the whole line."""
+    line = " ".join((line or "").split())
+    first = _SENTENCE_END.split(line, 1)[0]
+    m = _REQUEST_TAIL.search(first)
+    title = first[:m.start()] if m else first
+    title = title.strip().rstrip(".,:;!?。 ")
+    if m and _REQUEST_NOUN.get(m.group(1)) and title:
+        title += " " + _REQUEST_NOUN[m.group(1)]
+    return title if len(title) >= 4 else line
 _LOCK = threading.Lock()
 _ACTIVE: set = set()                     # mission ids with a pipeline thread in this process
 DEFAULT_CHECK_TIMEOUT = 600
@@ -419,13 +441,17 @@ class Pipeline:
     @staticmethod
     def commit_message(m: Dict[str, Any], d: Dict[str, Any], co_authors: List[str]) -> str:
         goal = (m.get("goal") or "").strip().splitlines()
-        title = " ".join((goal[0] if goal else "Director 미션 결과").split())
+        first = " ".join((goal[0] if goal else "Director 미션 결과").split())
+        title = title_from_goal(first)
         title = title if len(title) <= 72 else title[:71] + "…"
         checks = [s["name"] for s in d["steps"]
                   if s["kind"] in ("precheck", "catalog", "apply", "check", "manual") and s["status"] in ("ok", "warn")]
         body = []
         if m.get("summary"):
             body.append(" ".join(str(m["summary"]).split())[:600])
+        if title != first:                                  # the request itself stays in the body
+            req = " ".join((m.get("goal") or "").split())
+            body.append("요청: " + (req if len(req) <= 400 else req[:399] + "…"))
         body.append(f"Director 미션 {m['mission_id']} · 결과 run {d['run_id']}")
         if checks:
             body.append("확인: " + ", ".join(checks))

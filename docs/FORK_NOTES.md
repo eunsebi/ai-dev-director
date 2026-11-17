@@ -342,3 +342,17 @@ Changes:
 
 Tests: `tests/test_fork_builder_deletes.py` (15). `test_v306…::test_unresolved_review_after_budget_is_fail_not_human`
 now expects 2 builder calls (the identical P1 stops after one correction round).
+
+## 2026-11-17 · Readable commit / devlog titles after 「원본에 적용」 (`fix/commit-title`)
+
+Problem: the commit title was the mission goal's first line, i.e. the raw Discord instruction cut at 72 characters
+("ClipGuard M2b-1 영상 분석 만들어줘. docs/director/M2b1-analysis.md 명세대로, 결정은 do…"); the devlog draft reused it.
+
+Changes:
+- `core/apply_pipeline.py` — `title_from_goal`: first sentence of the goal without the Korean request ending
+  (만들어줘·구현해줘·고쳐 주세요·추가해줘…); verbs that carry meaning become a noun (고쳐/수정해 → 수정, 추가해/넣어 → 추가,
+  정리해 → 정리, 작성해 → 작성, 바꿔 → 변경). A plain-statement goal stays as it is; a result shorter than 4
+  characters falls back to the whole line. When the title differs from the goal, the body keeps the request as a
+  `요청: …` line (400 characters). The devlog step keeps using the commit title.
+
+Tests: `tests/test_fork_commit_title.py` (10).
