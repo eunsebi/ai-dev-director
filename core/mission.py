@@ -486,6 +486,10 @@ class MissionRunner:
         where = mission.get("base_worktree") or "(아직 통과한 단계 없음)"
         head_line = {"DONE": "미션 완료", "BLOCKED": "미션 보류 - 사용자 결정 필요",
                      "INCOMPLETE": "미션 중단 - 단계 예산 소진 또는 계획 불가", "FAILED": "미션 실패"}[status]
+        # fork 2026-11-17: say which INCOMPLETE it is (the dashboard showed "예산 소진" for a planning failure too)
+        plan_failed = status == "INCOMPLETE" and str(blocked or "").startswith("HEAD could not plan")
+        if status == "INCOMPLETE":
+            head_line = "미션 중단 - 다음 단계 계획 실패" if plan_failed else "미션 중단 - 단계 예산 소진"
         if status == "BLOCKED" and str(blocked or "").startswith("USAGE_LIMIT"):
             head_line = "미션 일시정지 - AI 사용 한도 (결정할 것 없음, 한도가 풀리면 「이어서 진행」)"
         text = (f"{head_line} ({passed}/{len(mission['steps'])} 단계 통과)\n"
@@ -495,6 +499,8 @@ class MissionRunner:
         self.notify(text, run_id=mission["steps"][-1].get("run_id"), role="HEAD")
         icon = {"DONE": "🎉 미션 완료", "BLOCKED": "🙋 미션 보류 · 사용자 결정 필요",
                 "INCOMPLETE": "⏹️ 미션 중단", "FAILED": "❌ 미션 실패"}[status]
+        if plan_failed:
+            icon = "⏹️ 미션 중단 · 다음 단계 계획 실패"
         if status == "BLOCKED" and str(blocked or "").startswith("USAGE_LIMIT"):
             icon = "⏸️ 미션 일시정지 · AI 사용 한도"
         lines = [f"목표: {mission['goal'][:300]}", f"단계: {passed}/{len(mission['steps'])} 통과"]

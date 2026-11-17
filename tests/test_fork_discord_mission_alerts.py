@@ -92,3 +92,10 @@ def test_alerts_never_break_the_mission_without_a_webhook(tmp_path, monkeypatch)
     monkeypatch.setattr(alerts, "discord_webhook", lambda: "")
     plans = [{"status": "DONE", "summary": "ok", "reason": "", "order": None}]
     assert _run_mission(tmp_path, monkeypatch, plans)["status"] == "DONE"
+
+
+def test_incomplete_says_whether_planning_failed_or_the_budget_ran_out(tmp_path, monkeypatch, sent):
+    # fork 2026-11-17: ClipGuard M2b-3 stopped because HEAD could not plan step 2, the console said "예산 소진"
+    done = _run_mission(tmp_path, monkeypatch, [{"status": "GIVE_UP", "summary": "", "reason": "OFF_GOAL: x", "order": None}])
+    assert done["status"] == "INCOMPLETE" and done["blocked_reason"].startswith("HEAD could not plan")
+    assert sent[-1][0] == "⏹️ 미션 중단 · 다음 단계 계획 실패 · proj"

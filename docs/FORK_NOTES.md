@@ -382,3 +382,12 @@ Changes:
 
 Tests: `tests/test_fork_apply_deletions.py` (apply + commit, rollback restores the file, unlisted only reported,
 user-changed file is a conflict).
+
+## 2026-11-17 · "예산 소진" only when the step budget ran out (`fix/incomplete-label`)
+
+Problem: INCOMPLETE covers two endings — the step budget ran out, or HEAD could not plan the next step (e.g. every
+plan rejected as OFF_GOAL). The console showed "예산 소진" for both; ClipGuard M2b-3 stopped after 1 of 6 steps.
+
+Changes: `console/stage.js` (`missionBadge`, blocked_reason passed into the stage mission), `console/console.js`
+→ "계획 실패" when `blocked_reason` starts with "HEAD could not plan"; `core/mission.py` end notification / Discord
+title says "다음 단계 계획 실패" or "단계 예산 소진". Test: `test_fork_discord_mission_alerts.py` (planning failure).
