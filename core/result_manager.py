@@ -633,7 +633,8 @@ class ResultManager:
 
     def tree_manifest(self, run_id: str) -> Dict[str, Any]:
         """Every file of the finished worktree that differs from the project, classified: A (new), M (changed by the
-        AIs, untouched by the user), CONFLICT (both changed), and deletions the AIs made (reported, never applied).
+        AIs, untouched by the user), CONFLICT (both changed), and deletions the AIs made (applied only when the ORDER's
+        allowed_deletions names the path and the project file is unchanged; otherwise reported).
         Comparisons use git's own blob ids, so CRLF conversion on Windows cannot fake a difference."""
         run = self.sm.get_run(run_id) or {}
         wt, proj = run.get("worktree_path") or "", run.get("project_path") or ""
@@ -686,6 +687,19 @@ class ResultManager:
         present = set(candidates)
         deleted = [rel for rel in origin_blobs if rel not in present and (proj_root / rel).exists()
                    and not SafetyPolicy.is_control_plane_path(rel)]
+        # fork 2026-11-17: a deletion the ORDER explicitly allowed (allowed_deletions, exact path) is applied when the
+        # project still has the file exactly as it was when the work started; anything else is only reported.
+        allowed_del = {str(p).replace("\\", "/") for p in ((self._load(run_id, "order.json") or {}).get("allowed_deletions") or [])}
+        wanted = [rel for rel in deleted if rel in allowed_del and SafetyPolicy.is_repo_relative_path(rel)[0]
+                  and SafetyPolicy.is_within_root(proj_root, proj_root / rel) and not (proj_root / rel).is_symlink()]
+        cur = self._git_blob_ids(proj_root, wanted) if wanted else {}
+        for rel in wanted:
+            if cur.get(rel) is not None and cur.get(rel) == origin_blobs.get(rel):
+                manifest.append({"path": rel, "type": "D", "source": None, "sha256": None, "size": 0, "deletion": True})
+                deleted.remove(rel)
+            else:
+                conflicts.append({"path": rel, "reason": "deletion skipped: changed in the project since the work started"})
+                deleted.remove(rel)
         return {"ok": True, "blocks": [], "manifest": manifest, "conflicts": conflicts, "deleted": deleted,
                 "unchanged": unchanged, "origin_ref": origin}
 
@@ -725,7 +739,7 @@ class ResultManager:
     def apply_tree(self, run_id: str, request_id: str = "", applied_by: str = "HUMAN", on_conflict: str = "block") -> Dict[str, Any]:
         """Apply a milestone's finished worktree to the project: backup, copy, re-verify in the project, roll back on
         any failure. on_conflict: 'block' refuses when the user changed a file the AIs also changed; 'skip' leaves
-        those files alone and applies the rest. Deletions are never applied."""
+        those files alone and applies the rest. Deletions are applied only when allowed (see tree_manifest)."""
         from core.bootstrap import configure_runtime
         rid = (request_id or "").strip() or hashlib.sha256(f"{run_id}{datetime.utcnow().isoformat()}".encode()).hexdigest()[:16]
         with _APPLY_LOCK:

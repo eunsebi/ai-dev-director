@@ -366,3 +366,19 @@ reached PASS with one P2 and 「원본에 적용」 stopped with "final_evidence
 
 Change: `ResultManager.reviewer_accepts` — `pass`, or review.json present with no P0/P1 and `head_decision == PASS`.
 Every other evidence condition is unchanged. Tests: `tests/test_fork_apply_p2_only.py`.
+
+## 2026-11-17 · Allowed deletions reach the project on 「원본에 적용」 (`fix/apply-deletions`)
+
+Problem: the Builder could delete files since `feat/builder-deletes`, but the whole-worktree apply (`apply_tree` /
+`tree_manifest`) only reported deletions ("작업본에서 지운 파일은 적용하지 않음") and the pipeline commit skipped paths
+that no longer exist. ClipGuard M2b-2's allowed deletion of `ReviewPlaceholderView.swift` stayed in the project.
+
+Changes:
+- `core/result_manager.py` `tree_manifest` — a deleted path listed verbatim in the run's `order.json`
+  `allowed_deletions` becomes a `deletion` manifest entry (the apply loop, backup and rollback already handled those)
+  when the project file is still identical to the work's origin blob; if the user changed it meanwhile it is a
+  conflict ("deletion skipped: …"). Unlisted deletions are still only reported.
+- `core/apply_pipeline.py` commit — a path the apply removed is staged when git tracks it.
+
+Tests: `tests/test_fork_apply_deletions.py` (apply + commit, rollback restores the file, unlisted only reported,
+user-changed file is a conflict).
