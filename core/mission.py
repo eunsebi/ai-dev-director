@@ -119,6 +119,15 @@ class MissionRunner:
         self.store = store or MissionStore()
         self.notify = notify or (lambda text, run_id=None, role="SYSTEM": None)
 
+    @staticmethod
+    def _alert(kind: str, mission: Dict[str, Any], title: str, lines, dedupe: str = "", mac: bool = False) -> None:
+        """Mission progress to Discord (core.alerts.mission_event, fork 2026-11-17). Never breaks the mission."""
+        try:
+            from core import alerts
+            alerts.mission_event(kind, mission, title, lines, dedupe=dedupe, mac=mac)
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------ lifecycle
     def create(self, project_path: str, goal: str, first_order: OrderSchema, config: Optional[dict] = None,
                notes: Optional[List[str]] = None, base_worktree: Optional[str] = None, profile: Optional[str] = None,
@@ -158,6 +167,8 @@ class MissionRunner:
                 fresh = self.store.load(mission_id)
                 if fresh and fresh.get("status") == "STOPPED":      # the operator pressed 작업 정지 during this step
                     mission = fresh
+                    self._alert("stopped", mission, "🛑 미션 정지", [f"목표: {mission['goal'][:300]}",
+                                "작업 정지로 멈췄습니다. 다시 시작하지 않습니다."], dedupe="stop")
                     break
         finally:
             latest = self.store.load(mission_id) or mission
@@ -200,6 +211,11 @@ class MissionRunner:
             r = step["result"]
             self.notify(f"[미션 {step['index']}/{total}] 결과 {r['final_state']} - "
                         f"{self._one_line(r)}", run_id=step["run_id"])
+            mark = {State.PASS: ("✅", "통과"), State.HUMAN_REQUIRED: ("⚠️", "확인 필요")}.get(
+                r["final_state"], ("❌", "실패"))
+            self._alert("step", mission, f"{mark[0]} 단계 {step['index']}/{total} {mark[1]}",
+                        [f"단계 목표: {str((step.get('order') or {}).get('goal', ''))[:300]}",
+                         f"결과: {self._one_line(r)[:600]}"], dedupe=f"{step['index']}:{step.get('run_id')}")
         result = step["result"]
         if result["final_state"] == State.PASS:
             mission["base_worktree"] = result.get("worktree_path") or mission.get("base_worktree")
@@ -315,6 +331,11 @@ class MissionRunner:
         else:
             orch._reserved_run_ids = set(getattr(orch, "_reserved_run_ids", set())) | {rid}
         self.notify(f"[미션 {step['index']}/{mission['max_steps']}] 실행 시작: {order.goal[:300]}", run_id=rid)
+        if step["index"] == 1:
+            self._alert("mission_start", mission, "▶️ 미션 시작",
+                        [f"목표: {mission['goal'][:400]}", f"첫 단계: {order.goal[:300]}",
+                         f"단계 예산 {mission['max_steps']} · 자동 적용 {mission.get('auto_apply') or 'off'}"],
+                        dedupe=rid)
         try:
             orch.run(project, order.goal, run_id=rid, order=order, base_worktree=mission.get("base_worktree"))
         except Exception as exc:
@@ -472,6 +493,19 @@ class MissionRunner:
         if blocked:
             text += f"\n사유: {blocked[:600]}"
         self.notify(text, run_id=mission["steps"][-1].get("run_id"), role="HEAD")
+        icon = {"DONE": "🎉 미션 완료", "BLOCKED": "🙋 미션 보류 · 사용자 결정 필요",
+                "INCOMPLETE": "⏹️ 미션 중단", "FAILED": "❌ 미션 실패"}[status]
+        if status == "BLOCKED" and str(blocked or "").startswith("USAGE_LIMIT"):
+            icon = "⏸️ 미션 일시정지 · AI 사용 한도"
+        lines = [f"목표: {mission['goal'][:300]}", f"단계: {passed}/{len(mission['steps'])} 통과"]
+        if mission["summary"]:
+            lines.append(f"요약: {mission['summary'][:700]}")
+        if blocked:
+            lines.append(f"사유: {str(blocked)[:400]}")
+        if status == "BLOCKED" and str(blocked or "").startswith("USAGE_LIMIT"):
+            lines.append("결정할 것은 없어요. 한도가 풀리면 콘솔에서 「이어서 진행」을 누르세요.")
+        lines.append(f"작업본: {where}")
+        self._alert("mission_end", mission, icon, lines, dedupe=f"{status}:{len(mission['steps'])}", mac=True)
         self._auto_apply(mission)
         return mission
 
@@ -494,10 +528,16 @@ class MissionRunner:
         if result.get("status") == "applied":
             self.notify(f"결과물을 프로젝트에 적용했습니다: {len(result.get('files', []))}개 파일 "
                         f"({mission['project_path']}). 적용 후 테스트: {result.get('verification')}", run_id=rid)
+            self._alert("apply", mission, "📦 결과물 자동 적용",
+                        [f"{len(result.get('files', []))}개 파일을 프로젝트에 적용했습니다.",
+                         f"적용 후 테스트: {result.get('verification')}"], dedupe=f"applied:{rid}")
         else:
             why = "; ".join(result.get("blocks") or []) or result.get("reason") or result.get("error") or result.get("status")
             self.notify(f"결과물을 자동 적용하지 않았습니다 ({result.get('status')}): {str(why)[:400]}. "
                         f"작업본: {mission.get('base_worktree')}", run_id=rid)
+            self._alert("apply", mission, "⚠️ 결과물 자동 적용 안 함",
+                        [f"상태: {result.get('status')}", f"사유: {str(why)[:400]}",
+                         f"작업본: {mission.get('base_worktree')}"], dedupe=f"blocked:{rid}")
 
 
 def _timed_out(orch, err: Optional[str]) -> bool:
