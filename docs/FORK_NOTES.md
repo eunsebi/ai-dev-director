@@ -307,3 +307,16 @@ Known unrelated on this Mac: `test_v020_provider_ops.py` needs `requests` (colle
 - `Orchestrator._compile_fix_rounds`: `build_errors_source == "test"`도 컴파일 수정으로 처리한다(리뷰·HEAD 없이 빌더 직행, `compile_fix_rounds` 상한·변화 없으면 중단은 그대로). 지시문에 "테스트 명령의 오류이고, 경로는 테스트 스크립트가 만든 사본(캐시 폴더, `App/Foo.swift` → `Sources/<모듈>/App_Foo.swift`)일 수 있으니 프로젝트 파일로 되짚어라"를 덧붙인다.
 - `Orchestrator._run_decision_autonomous`·`MissionRunner._plan`: 첫 시도가 **시간 초과**면 같은 HEAD에 다시 묻지 않고 바로 다른 공급자로 넘긴다(빌더는 11-08부터 이렇게 했다). 넘길 공급자가 없으면 예전처럼 같은 HEAD에 한 번 더 묻는다. 다른 오류(JSON 깨짐 등)는 예전처럼 같은 공급자로 한 번 더 시도한다.
 - 테스트: `tests/test_fork_repair_speed.py`에 5개(테스트 단계 컴파일), `tests/test_fork_head_timeout.py` 4개(판정 3·미션 계획 1). 새 동작 테스트는 예전 코드에서 실패하는 것을 확인했다.
+
+## 미션 진행을 디스코드로 알리기 (2026-11-17)
+- **계기**: 콘솔을 계속 보고 있지 않으면 미션이 끝났는지, 실패했는지, 한도로 멈췄는지 알 수 없었다. 기존 디스코드 알림(`core/alerts.py`, 2026-11-07)은 AI 호출 실패와 단계 실패·확인 필요만 보냈다.
+- `alerts.mission_event`: 미션 진행 메시지 하나를 `제목 · 프로젝트 폴더 이름` + 본문 + `경과 시간 · 미션 ID`로 보낸다. 같은 단계를 두 번 알리지 않도록(이어서 진행 등) 미션·종류·단계별로 한 번만 보낸다.
+- `MissionRunner`가 보내는 시점:
+  - `mission_start` ▶️ 첫 단계 실행 시작(목표, 첫 단계, 단계 예산, 자동 적용 설정)
+  - `step` ✅ 통과 / ❌ 실패 / ⚠️ 확인 필요 (단계 목표, 테스트·리뷰 한 줄 결과)
+  - `mission_end` 🎉 완료 / 🙋 보류(사용자 결정 필요) / ⏸️ 일시정지(AI 사용 한도, 결정할 것 없음) / ⏹️ 중단 / ❌ 실패 (목표, 통과 단계 수, 요약, 사유, 작업본). 맥 알림 센터 배너도 띄운다.
+  - `apply` 📦 자동 적용 완료 / ⚠️ 자동 적용 안 함
+  - `stopped` 🛑 작업 정지
+- 미션에 속한 run(`runs/<run>/mission_base.json`)의 단계 실패는 미션 메시지가 대신하므로 디스코드에 두 번 보내지 않는다(맥 배너는 그대로).
+- 설정(로컬 `config.yaml`, 커밋하지 않음): `alerts.discord_webhook`에 디스코드 웹후크 주소(또는 `DIRECTOR_DISCORD_WEBHOOK` 환경 변수). 보낼 종류를 줄이려면 `alerts.discord_events: [mission_end, apply]`처럼 적는다(없으면 전부).
+- 테스트: `tests/test_fork_discord_mission_alerts.py` 6개.
