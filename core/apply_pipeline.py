@@ -471,8 +471,12 @@ class Pipeline:
             if rel not in candidates and _git(["status", "--porcelain", "--", rel], proj).stdout.strip():
                 candidates.append(rel)
         for rel in candidates:
-            if not rel or not (Path(proj) / rel).exists():
+            if not rel:
                 continue
+            if not (Path(proj) / rel).exists():
+                # a deletion the apply made: stage it when git tracks the file (git add stages the removal)
+                if _git(["ls-files", "--error-unmatch", "--", rel], proj).returncode != 0:
+                    continue
             if Path(rel).name == "CLAUDE.md":
                 notes.append(f"{rel}는 커밋하지 않음(보안 규칙)"); continue
             if _git(["check-ignore", "-q", "--", rel], proj).returncode == 0:
