@@ -356,3 +356,13 @@ Changes:
   `요청: …` line (400 characters). The devlog step keeps using the commit title.
 
 Tests: `tests/test_fork_commit_title.py` (10).
+
+## 2026-11-17 · A P2-only PASS run can be applied (`fix/apply-p2-only`)
+
+Problem: the HEAD-proxy final gate (2026-11-08, `test_fork_p2_gate`) passes a run with HEAD PASS, green verification
+and only P2 findings even when the reviewer verdict is `changes_required`, but the apply preconditions
+(`ResultManager.preconditions` / `tree_preconditions`) still required `reviewer_verdict == "pass"`. ClipGuard M2b-2
+reached PASS with one P2 and 「원본에 적용」 stopped with "final_evidence is missing or not fully PASS".
+
+Change: `ResultManager.reviewer_accepts` — `pass`, or review.json present with no P0/P1 and `head_decision == PASS`.
+Every other evidence condition is unchanged. Tests: `tests/test_fork_apply_p2_only.py`.
