@@ -267,7 +267,9 @@ def test_unresolved_review_after_budget_is_fail_not_human(tmp_path, monkeypatch)
     monkeypatch.setattr(orch, "run_decision_with_failover", lambda *a: (DecisionSchema(
         decision="PASS", rationale="looks fine", next_steps=[]), None))
     out = orch.run(str(tmp_path / "proj"), "double", order=OrderSchema(**ORDER))
-    assert out["final_state"] == State.FAIL and len(calls) == 3
+    # fork 2026-11-17: the same P1 after a correction round stops at once (REPAIR_REPEATED_FINDINGS) instead of
+    # spending the rest of the budget; still FAIL, never HUMAN_REQUIRED.
+    assert out["final_state"] == State.FAIL and len(calls) == 2
 
 
 def test_same_family_head_and_reviewer_pass_with_recorded_note(monkeypatch):
