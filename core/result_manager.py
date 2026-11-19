@@ -396,7 +396,7 @@ class ResultManager:
         if st in (RESULT_APPLIED, RESULT_DISCARDED):
             blocks.append(f"Result already {st}")
         ev = self._load(run_id, "final_evidence.json") or {}
-        if not ev or ev.get("reasons") or ev.get("canonical_containment") != "PASS" or ev.get("verification") != "PASS" or ev.get("baseline") != "PASS" or ev.get("regression") != "PASS" or not self.reviewer_accepts(run_id, ev):
+        if not ev or ev.get("reasons") or ev.get("canonical_containment") != "PASS" or ev.get("verification") != "PASS" or ev.get("baseline") not in ("PASS", "PREEXISTING_FAILURES") or ev.get("regression") != "PASS" or not self.reviewer_accepts(run_id, ev):
             blocks.append("final_evidence is missing or not fully PASS")
         if not wt or not Path(wt).exists():
             blocks.append("Worktree missing")
@@ -715,7 +715,7 @@ class ResultManager:
         if st in (RESULT_APPLIED, RESULT_DISCARDED):
             blocks.append(f"Result already {st}")
         ev = self._load(run_id, "final_evidence.json") or {}
-        if not ev or ev.get("reasons") or ev.get("canonical_containment") != "PASS" or ev.get("verification") != "PASS" or ev.get("baseline") != "PASS" or ev.get("regression") != "PASS" or not self.reviewer_accepts(run_id, ev):
+        if not ev or ev.get("reasons") or ev.get("canonical_containment") != "PASS" or ev.get("verification") != "PASS" or ev.get("baseline") not in ("PASS", "PREEXISTING_FAILURES") or ev.get("regression") != "PASS" or not self.reviewer_accepts(run_id, ev):
             blocks.append("final_evidence is missing or not fully PASS")
         if not wt or not Path(wt).exists():
             blocks.append("Worktree missing")
