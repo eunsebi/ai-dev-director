@@ -391,3 +391,39 @@ plan rejected as OFF_GOAL). The console showed "예산 소진" for both; ClipGua
 Changes: `console/stage.js` (`missionBadge`, blocked_reason passed into the stage mission), `console/console.js`
 → "계획 실패" when `blocked_reason` starts with "HEAD could not plan"; `core/mission.py` end notification / Discord
 title says "다음 단계 계획 실패" or "단계 예산 소진". Test: `test_fork_discord_mission_alerts.py` (planning failure).
+
+## 2026-11-20 · Automatic flow: direct submit, limit guard, pre-apply review (`feat/auto-flow`)
+
+Goal: fewer manual hops between "instruction written in Claude Code" and "user tests on a device". The user keeps three
+checkpoints — confirming the instruction, pressing 「원본에 적용」, and the device test. Everything in between runs alone.
+
+1. **Direct submit from Claude Code** — `tools/director-submit.py` (install as `~/.local/bin/director-submit`) posts
+   to the existing `/bridge/missions` endpoint with the local `data/solomon-bridge.token`, `source: "claude-code"`
+   (label "Claude Code 지시"), and a stable `request_id` (`cc-<date>-<sha(project+goal)>`, so a retry never starts a
+   second mission). Project aliases come from `~/.config/director-intake/projects.json`. The Discord path
+   (OpenClaw → `director-intake`) is unchanged and still needs a human [시작]. Skill: `~/.claude/skills/director-send`.
+2. **Limit guard** — `core/limit_guard.py`, config `limit_guard` (off by default). Before a step runs and before HEAD
+   plans the next step, the subscription windows of the providers in the current roles are checked
+   (`subscription_limits`; a stale Claude reading is refreshed once with the small Haiku probe). At or above
+   `five_hour_percent` / `weekly_percent` (or a rejected window) the mission stops as `BLOCKED` with
+   `USAGE_LIMIT_GUARD: …` and a `limit_wait` record (reset time + 2 min, or `retry_minutes`). A real limit hit
+   (`USAGE_LIMIT`, 2026-11-13) now gets the same record. `companion_server.limit_resume_loop` (a thread in the
+   console server, not a new process) calls `dashboard_server.resume_limit_paused_missions` every
+   `check_interval_sec`: once the time passed and the limits are really below the thresholds it resumes with the new
+   `decide_mission(..., "resume")` (like extend, but the step budget is unchanged) and sends "▶️ 한도가 풀려 미션을
+   이어서 진행해요". Still over → only the next check time moves, no repeated alert. `reopen` moves `limit_wait` into
+   `limit_history`. A limit pause skips the review and auto-apply.
+3. **Pre-apply review** — `core/pre_apply_review.py`, per project `pre_apply_review` (checks + `claude`). When a
+   mission ends DONE: commands run in the deliverable worktree (`{worktree} {project} {report_dir} {director}`),
+   files a command rewrote are restored and reported (e.g. Xcode rewriting the String Catalog), new files are
+   reported; then read-only Claude (`Read,Grep,Glob`, `--add-dir report_dir`, default model sonnet) reviews the
+   goal, the diff against the project (`tree_manifest` + unified diff, 60k chars), the check results and the
+   screenshots, and answers `ok|warn|fail` + concerns + things to test by hand. Skipped when the limit guard says the
+   limit is near. Report: `runs/<run>/review/review.md|json`; summary in mission JSON `review` and `mission_view`;
+   Discord "🔎 검수 시작" / "🟢🟡🔴 검수 보고서 · …" with the console link (first `remote_access.hosts`). A `fail`
+   review blocks `auto_apply`. `tools/macos/sim-screenshot.sh` installs the built simulator app and captures light and
+   dark screenshots.
+4. Discord events `review` and `limit` added to `alerts.MISSION_EVENTS` (sent by default).
+
+Tests: `tests/test_fork_limit_guard.py` (7), `tests/test_fork_pre_apply_review.py` (7),
+`tests/test_fork_director_submit.py` (4).

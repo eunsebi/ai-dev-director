@@ -183,6 +183,10 @@ class MissionRunner:
             return mission
         mission["status"], mission["blocked_reason"] = "RUNNING", None
         mission["stopped_at"] = None
+        if mission.get("limit_wait"):
+            mission.setdefault("limit_history", []).append(mission["limit_wait"])
+            mission["limit_history"] = mission["limit_history"][-10:]
+            mission["limit_wait"] = None
         self.store.save(mission, force=True)
         return mission
 
@@ -194,6 +198,10 @@ class MissionRunner:
         knobs = autopilot.profile_overrides(orch.config, mission.get("profile"))
         if knobs:                                              # the profile's budgets apply to every run of this mission
             orch.config.setdefault("autonomy", {}).update({k: v for k, v in knobs.items() if k != "max_steps"})
+        if (step.get("result") is None and not step.get("run_id")) or step.get("limit_paused"):
+            paused = self._limit_guard(orch, mission, f"단계 {step['index']} 실행")
+            if paused:
+                return paused
         if step.get("limit_paused") and (step.get("result") or {}).get("final_state") != State.PASS:
             # Resumed after a usage-limit pause (2026-11-13): the step never really ran, so run the SAME ORDER again
             # in a fresh run instead of re-reading the old result (which would pause the mission again at once).
@@ -255,11 +263,15 @@ class MissionRunner:
         limit = self._usage_limit_stop(result)
         if limit:
             step["limit_paused"] = True
+            mission["limit_wait"] = self._hit_wait(orch)
             self.store.save(mission)
             self.notify(f"[미션 {step['index']}/{total}] AI 사용 한도로 멈춤: {limit[:160]} — 한도가 풀리면 「이어서 진행」",
                         run_id=step.get("run_id"))
             return self._finish(mission, "BLOCKED", blocked=f"USAGE_LIMIT: {limit} (한도가 풀리면 「이어서 진행」)")
 
+        paused = self._limit_guard(orch, mission, "다음 단계 계획")
+        if paused:
+            return paused
         plan = self._plan(orch, mission)
         status = str(plan.get("status", "")).upper()
         if status == "DONE":
@@ -477,6 +489,39 @@ class MissionRunner:
         last = rows[-1]
         return f"{last['provider']} {last['role']}: {(last['error_detail'] or '')[:200]}".strip()
 
+    def _limit_guard(self, orch, mission: Dict[str, Any], before: str) -> Optional[Dict[str, Any]]:
+        """fork 2026-11-20: 남은 구독 한도가 문턱(limit_guard) 아래면 이 단계·계획을 시작하기 전에 미리 멈춘다.
+        미션은 BLOCKED(USAGE_LIMIT_GUARD)가 되고, 콘솔 서버의 감시 스레드가 풀리는 시각 뒤에 이어서 진행한다."""
+        try:
+            from core import limit_guard
+            config = getattr(orch, "config", None) or {}
+            hit = limit_guard.check(config)
+            if not hit:
+                return None
+            mission["limit_wait"] = dict(limit_guard.wait_record(hit, limit_guard.settings(config), "guard"), before=before)
+        except Exception:
+            return None
+        self.notify(f"[미션] 한도 초과 예상으로 {before} 전에 멈춤: {hit['reason']}", run_id=None)
+        return self._finish(mission, "BLOCKED", blocked=f"{limit_guard.GUARD_PREFIX}: {hit['reason']} ({before} 전에 미리 멈춤)")
+
+    @staticmethod
+    def _hit_wait(orch) -> Dict[str, Any]:
+        """실제 한도에 걸려 멈췄을 때: 지금 아는 풀리는 시각으로 다시 볼 시각을 정한다(모르면 retry_minutes 뒤)."""
+        try:
+            from core import limit_guard
+            config = getattr(orch, "config", None) or {}
+            opts = limit_guard.settings(config)
+            hit = None
+            if opts["enabled"]:
+                providers = limit_guard.providers_in_use(config)
+                from core import subscription_limits as sl
+                snap = {"providers": {"ANTHROPIC": sl._read_cache().get("claude") or {}, "OPENAI": sl.codex_limits(),
+                                      "GOOGLE": sl._read_cache().get("antigravity") or {}}}
+                hit = limit_guard.over_limit(snap, providers, dict(opts, five_hour_percent=0, weekly_percent=100))
+            return limit_guard.wait_record(hit, opts, "hit")
+        except Exception:
+            return {"kind": "hit", "resume_after": None, "auto_resume": True}
+
     def _finish(self, mission: Dict[str, Any], status: str, summary: str = "", blocked: Optional[str] = None):
         mission["status"] = status
         mission["summary"] = summary or mission.get("summary", "")
@@ -490,8 +535,14 @@ class MissionRunner:
         plan_failed = status == "INCOMPLETE" and str(blocked or "").startswith("HEAD could not plan")
         if status == "INCOMPLETE":
             head_line = "미션 중단 - 다음 단계 계획 실패" if plan_failed else "미션 중단 - 단계 예산 소진"
-        if status == "BLOCKED" and str(blocked or "").startswith("USAGE_LIMIT"):
+        limit_pause = status == "BLOCKED" and str(blocked or "").startswith("USAGE_LIMIT")
+        guard_pause = limit_pause and str(blocked or "").startswith("USAGE_LIMIT_GUARD")
+        wait = mission.get("limit_wait") or {}
+        auto_resume = limit_pause and wait.get("auto_resume") is not False and self._auto_resume_on()
+        if limit_pause:
             head_line = "미션 일시정지 - AI 사용 한도 (결정할 것 없음, 한도가 풀리면 「이어서 진행」)"
+            if guard_pause:
+                head_line = "미션 일시정지 - 한도 초과 예상 (결정할 것 없음)"
         text = (f"{head_line} ({passed}/{len(mission['steps'])} 단계 통과)\n"
                 f"목표: {mission['goal'][:300]}\n{mission['summary'][:1500]}\n결과물 위치(작업본): {where}")
         if blocked:
@@ -501,19 +552,50 @@ class MissionRunner:
                 "INCOMPLETE": "⏹️ 미션 중단", "FAILED": "❌ 미션 실패"}[status]
         if plan_failed:
             icon = "⏹️ 미션 중단 · 다음 단계 계획 실패"
-        if status == "BLOCKED" and str(blocked or "").startswith("USAGE_LIMIT"):
-            icon = "⏸️ 미션 일시정지 · AI 사용 한도"
+        if limit_pause:
+            icon = "⏸️ 미션 일시정지 · 한도 초과 예상" if guard_pause else "⏸️ 미션 일시정지 · AI 사용 한도"
         lines = [f"목표: {mission['goal'][:300]}", f"단계: {passed}/{len(mission['steps'])} 통과"]
         if mission["summary"]:
             lines.append(f"요약: {mission['summary'][:700]}")
         if blocked:
             lines.append(f"사유: {str(blocked)[:400]}")
-        if status == "BLOCKED" and str(blocked or "").startswith("USAGE_LIMIT"):
+        if limit_pause and auto_resume:
+            from core.limit_guard import when
+            at = when(wait.get("resume_after")) if wait.get("resume_after") else "한도 확인 뒤"
+            lines.append(f"결정할 것은 없어요. {at} 이후 한도가 풀린 게 확인되면 자동으로 이어서 진행하고 다시 알려 드려요.")
+        elif limit_pause:
             lines.append("결정할 것은 없어요. 한도가 풀리면 콘솔에서 「이어서 진행」을 누르세요.")
         lines.append(f"작업본: {where}")
         self._alert("mission_end", mission, icon, lines, dedupe=f"{status}:{len(mission['steps'])}", mac=True)
+        if limit_pause:
+            return mission                          # 일시정지: 검수·자동 적용은 미션이 끝난 뒤에
+        if status == "DONE":
+            self._review(mission)
         self._auto_apply(mission)
         return mission
+
+    def _config(self) -> Dict[str, Any]:
+        try:
+            return getattr(self.factory(), "config", None) or {}
+        except Exception:
+            return {}
+
+    def _auto_resume_on(self) -> bool:
+        from core import limit_guard
+        opts = limit_guard.settings(self._config())
+        return opts["enabled"] and opts["auto_resume"]
+
+    def _review(self, mission: Dict[str, Any]) -> None:
+        """fork 2026-11-20: 완료된 미션의 결과물을 적용 전에 검수(명령 검사 + Claude 검수 보고서)해 디스코드로 보낸다.
+        프로젝트 config에 pre_apply_review가 있을 때만. 실패해도 미션 결과는 그대로다."""
+        from core import pre_apply_review
+        config = self._config()
+        if not pre_apply_review.review_settings(config, mission.get("project_path", "")):
+            return
+        try:
+            pre_apply_review.run_for_mission(mission, config, self.store, alert=self._alert, notify=self.notify)
+        except Exception as exc:
+            self.notify(f"검수 보고서를 만들지 못했습니다: {str(exc)[:300]}", run_id=deliverable_run_id(mission))
 
     def _auto_apply(self, mission: Dict[str, Any]) -> None:
         """Deliver the finished work into the project when the mission's policy says so. Only PASSED milestones
@@ -521,6 +603,11 @@ class MissionRunner:
         policy = mission.get("auto_apply") or "off"
         rid = deliverable_run_id(mission)
         if policy == "off" or not rid or (policy == "on_done" and mission["status"] != "DONE"):
+            return
+        if (mission.get("review") or {}).get("status") == "fail":       # fork 2026-11-20: 검수 실패면 자동 적용 안 함
+            self._alert("apply", mission, "⚠️ 결과물 자동 적용 안 함",
+                        ["검수 보고서가 「적용 비권장」이라 자동 적용하지 않았어요.",
+                         f"보고서: {(mission.get('review') or {}).get('report')}"], dedupe=f"review-blocked:{rid}")
             return
         try:
             from core.result_manager import ResultManager
