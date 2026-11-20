@@ -427,3 +427,28 @@ checkpoints — confirming the instruction, pressing 「원본에 적용」, and
 
 Tests: `tests/test_fork_limit_guard.py` (7), `tests/test_fork_pre_apply_review.py` (7),
 `tests/test_fork_director_submit.py` (4).
+
+## 2026-11-20 · Second opinion from Codex / Antigravity (`tools/second-opinion.py`)
+
+Goal: ask the other subscriptions a short read-only question from an interactive Claude Code session (design choice,
+bug hypothesis, review of an uncommitted diff) without starting a Director mission. Claude, the conductor, is never
+called as a worker.
+
+- `tools/second-opinion.py` (`check` / `ask codex|agy|both [--project] [--file] [--with-diff] [--timeout] [--force]`)
+  reuses `core/research_runner.TriadResearchRunner` instead of a new wrapper: subscription login only (API keys
+  stripped), argv without a shell, process-tree timeout, one bounded retry for transient failures only, and the
+  git-status before/after check (`RESEARCH_READ_ONLY_VIOLATION` → the answer is discarded). Each worker runs in a
+  throw-away workspace: a detached worktree of the project HEAD (`create_research_workspaces`, removed afterwards)
+  or an empty git repo. The original project is never touched.
+- `--with-diff` appends `git diff HEAD` (40k chars max) with secret-like paths excluded (`.env*`, keys, tokens,
+  `CLAUDE.md`, `config.yaml`, `GoogleService-Info.plist`).
+- Workers over the `limit_guard` thresholds (read from `subscription_limits`, independent of `limit_guard.enabled`)
+  are skipped unless `--force`.
+- Output: JSON on stdout, `runs/second-opinion/SO-<time>-<hash>/report.md|result.json`. Calls go through
+  `ProcessTreeRunner`, so they appear in the work ledger.
+- Runs under the Director `.venv` automatically (re-exec when `psutil` is missing). Install:
+  `ln -sf ~/work/ai-dev-director/tools/second-opinion.py ~/.local/bin/second-opinion` and copy
+  `tools/skills/second-opinion/SKILL.md` to `~/.claude/skills/second-opinion/`.
+
+Tests: `tests/test_fork_second_opinion.py` (7, fake CLIs: blank workspace, diff attached without secrets and project
+untouched, diff not sent by default, write rejected, limit skip/block/force, input validation, check).
