@@ -452,3 +452,20 @@ called as a worker.
 
 Tests: `tests/test_fork_second_opinion.py` (7, fake CLIs: blank workspace, diff attached without secrets and project
 untouched, diff not sent by default, write rejected, limit skip/block/force, input validation, check).
+
+## 2026-11-21 · Pre-apply review state: shown in the console, apply waits for it (`fix/review-state`)
+
+First real mission on the automatic flow (ClipGuard M4g): the user pressed 「원본에 적용」 while the pre-apply review
+was still running `xcodebuild test`; the apply pipeline cleaned up the worktree and the review died with
+`FileNotFoundError`. The error went only to the console chat, so no report and no Discord message.
+
+- `core/pre_apply_review.py`: `mark_state()` saves `review = {status: running, started_at}` on the mission as soon as
+  the review starts; `is_running()` (a `running` older than 45 min counts as stalled).
+- `core/mission.py` `_review`: a crash now saves `review.status = error` and sends 「⚠️ 검수 보고서를 만들지 못했어요」.
+- `dashboard_server.decide_mission(apply)`: returns `review_running` while the review runs, unless `force=1`
+  (`/ops/mission/decide` form field).
+- `console/stage.js`: result card shows 「적용 전 검수」 badge (🔎 검수 중 · n분째 / 🟢 / 🟡 / 🔴 / ⚠ 검수 실패) and one-line
+  summary; while running the apply button reads 「원본에 적용 (검수 중)」 and asks for confirmation (then sends force).
+
+Tests: `tests/test_fork_pre_apply_review.py` (+4: is_running/stale, running saved during review, crash recorded and
+alerted, apply waits unless forced). Needs a console server restart (Python changed).

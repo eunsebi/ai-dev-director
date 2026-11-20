@@ -595,7 +595,17 @@ class MissionRunner:
         try:
             pre_apply_review.run_for_mission(mission, config, self.store, alert=self._alert, notify=self.notify)
         except Exception as exc:
-            self.notify(f"검수 보고서를 만들지 못했습니다: {str(exc)[:300]}", run_id=deliverable_run_id(mission))
+            rid = deliverable_run_id(mission)
+            self.notify(f"검수 보고서를 만들지 못했습니다: {str(exc)[:300]}", run_id=rid)
+            # fork 2026-11-21: 실패도 상태로 남기고 디스코드로 알린다(전에는 콘솔 채팅에만 남아 몰랐음)
+            try:
+                pre_apply_review.mark_state(self.store, mission, {"status": "error", "run_id": rid, "at": _now(),
+                                                                  "summary": str(exc)[:300]})
+            except Exception:
+                pass
+            self._alert("review", mission, "⚠️ 검수 보고서를 만들지 못했어요",
+                        [str(exc)[:300], "보고서 없이 적용하려면 콘솔에서 결과를 직접 확인한 뒤 「원본에 적용」을 눌러 주세요."],
+                        dedupe=f"review-error:{rid}")
 
     def _auto_apply(self, mission: Dict[str, Any]) -> None:
         """Deliver the finished work into the project when the mission's policy says so. Only PASSED milestones
