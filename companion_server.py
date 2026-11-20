@@ -280,7 +280,9 @@ class CompanionHandler(d.DashboardHandler):
                     goal = str(payload.get('goal', '')).strip()
                     if not 5 <= len(goal) <= 6000:
                         raise ValueError('작업 목표는 5~6000자여야 합니다')
-                    result = d.start_goal_mission(target, goal, profile=payload.get('profile'), source='solomon', request_id=ident,
+                    # fork 2026-11-20: Claude Code(사람이 앉아 있는 대화형 세션)가 맥 안에서 바로 접수·시작한다
+                    source = 'claude-code' if payload.get('source') == 'claude-code' else 'solomon'
+                    result = d.start_goal_mission(target, goal, profile=payload.get('profile'), source=source, request_id=ident,
                                                   create_project=bool(payload.get('create_project')), auto_apply=payload.get('auto_apply'))
                     code = {'started': 202, 'busy': 409, 'question': 200, 'escalated': 200}.get(result.get('status'), 400)
                     return self._send_json(result, code)
@@ -312,6 +314,27 @@ class CompanionHandler(d.DashboardHandler):
         return super().do_POST()
 
 
+def limit_resume_loop(server) -> None:
+    """fork 2026-11-20: 한도로 멈춘 미션을 풀리는 시각 뒤에 이어서 진행한다(limit_guard). 서버 안의 스레드라
+    상시 프로그램이 늘지 않는다. limit_guard.enabled가 꺼져 있으면 아무것도 하지 않고 주기만 돈다."""
+    import time
+    from core import limit_guard
+    log = logging.getLogger('director.companion')
+    time.sleep(30)
+    while not getattr(server, 'stopping', False):
+        interval = 300
+        try:
+            opts = limit_guard.settings(d.load_config())
+            interval = max(60, int(opts.get('check_interval_sec') or 300))
+            if opts['enabled'] and opts['auto_resume']:
+                resumed = d.resume_limit_paused_missions()
+                if resumed:
+                    log.warning('limit resume: %s', ', '.join(resumed))
+        except Exception as exc:
+            log.warning('limit resume check failed: %s', exc)
+        time.sleep(interval)
+
+
 def run():
     config = json.loads((ROOT / 'companion.json').read_text(encoding='utf-8'))
     d._ensure_schema()
@@ -321,6 +344,7 @@ def run():
         token_path.write_text(secrets.token_urlsafe(48), encoding='utf-8')
     server.bridge_token = token_path.read_text(encoding='utf-8').strip()
     server.bridge = SolomonBridge(d, config.get('allowed_projects', []))
+    threading.Thread(target=limit_resume_loop, args=(server,), name='director-limit-resume', daemon=True).start()
     if (d.load_config().get('autonomy') or {}).get('resume_on_start'):
         import threading
         threading.Thread(target=d.resume_interrupted_missions, name='director-mission-resume', daemon=True).start()

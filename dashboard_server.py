@@ -881,6 +881,7 @@ def mission_view(m: dict, sm: Optional[StateMachine] = None) -> dict:
             "applied": applied, "apply_state": (applied or {}).get("status") or ("pending" if m.get("base_worktree") and m.get("status") != "RUNNING" else None),
             # fork 2026-11-07: delivery pipeline progress (steps, waiting manual check, commit, warnings)
             "delivery": {k: v for k, v in (m.get("delivery") or {}).items() if k not in ("pid", "files")} or None,
+            "review": m.get("review"), "limit_wait": m.get("limit_wait"),
             "created_at": m.get("created_at"), "updated_at": m.get("updated_at")}
 
 
@@ -910,7 +911,8 @@ def start_goal_mission(project_path: str, goal: str, profile: Optional[str] = No
         orch = Orchestrator(config=load_config())
     except Exception as e:
         return {"status": "rejected", "error": str(e)[:300]}
-    label = {"solomon": "솔로몬 CEO 지시", "cli": "CLI 지시", "api": "외부 지시", "discord": "디스코드 접수"}.get(source, source)
+    label = {"solomon": "솔로몬 CEO 지시", "cli": "CLI 지시", "api": "외부 지시", "discord": "디스코드 접수",
+             "claude-code": "Claude Code 지시"}.get(source, source)
     cm.add_message(sid, "USER", f"[{label} · {profile}] {goal}")
     try:
         previous = latest_deliverable(project_path) if autopilot.enabled(orch.config) else None
@@ -1018,14 +1020,17 @@ def decide_mission(mission_id: str, action: str, reason: str = "", max_steps: Op
         ChatManager().add_message(sid, "SYSTEM", f"[{by}] 미션 {mission_id} 결과물 폐기: {result.get('status')} {reason[:200]}")
         invalidate_status_cache()
         return result
-    if action in ("extend", "replan"):
+    if action in ("extend", "replan", "resume"):
+        # resume (fork 2026-11-20): 한도 일시정지에서 그대로 이어서 — 단계 예산은 바꾸지 않는다
         if m.get("status") == "RUNNING":
             return {"status": "busy", "error": "mission is still running"}
         key = _project_key(m["project_path"])
         with _RUN_LOCK:
             if key in _ACTIVE_PROJECTS:
                 return {"status": "busy", "error": BUSY_MESSAGE}
-            if max_steps:
+            if action == "resume":
+                m["max_steps"] = max(int(m.get("max_steps") or 0), len(m["steps"]))
+            elif max_steps:
                 m["max_steps"] = max(int(max_steps), len(m["steps"]) + 1)
             elif action == "extend":
                 m["max_steps"] = len(m["steps"]) + 2
@@ -1033,7 +1038,8 @@ def decide_mission(mission_id: str, action: str, reason: str = "", max_steps: Op
                 m["steps"][-1]["operator_replan"] = (reason or f"{by} re-plan")[:300]
             store.save(m)
             _ACTIVE_PROJECTS[key] = mission_id
-        ChatManager().add_message(sid, "SYSTEM", f"[{by}] 미션 {mission_id} {'재계획' if action == 'replan' else '연장'}: 단계 예산 {m['max_steps']}" + (f" · {reason[:200]}" if reason else ""))
+        label = {"replan": "재계획", "resume": "한도 풀림 · 이어서 진행"}.get(action, "연장")
+        ChatManager().add_message(sid, "SYSTEM", f"[{by}] 미션 {mission_id} {label}: 단계 예산 {m['max_steps']}" + (f" · {reason[:200]}" if reason else ""))
         _run_mission_thread(sid, mission_id, key, reopen=True)
         return {"status": "resumed", "mission_id": mission_id, "max_steps": m["max_steps"]}
     return {"status": "error", "error": f"unknown action {action!r}"}
@@ -1061,6 +1067,21 @@ def build_digest_payload() -> dict:
             "applied_7d": sum(1 for v in recent if (v.get("applied") or {}).get("status") == "applied"),
             "usage_today": summary.get("today", {}).get("total"), "working_now": usage.running_now(),
             "pending_results": len(_result_manager().pending_results())}
+
+
+def resume_limit_paused_missions() -> list:
+    """fork 2026-11-20: 한도로 멈춘 미션(USAGE_LIMIT·USAGE_LIMIT_GUARD) 중 풀리는 시각이 지났고 한도가 실제로 풀린 것을
+    이어서 진행한다. 콘솔 서버 안의 감시 스레드가 limit_guard.check_interval_sec마다 부른다."""
+    from core import limit_guard
+    from core.mission import MissionRunner
+
+    def alert(kind, mission, title, lines, dedupe=""):
+        MissionRunner._alert(kind, mission, title, lines, dedupe=dedupe)
+    resumed = limit_guard.resume_due(load_config(), MissionStore(),
+                                     lambda mid: decide_mission(mid, "resume", reason="한도가 풀려 자동 재개", by="DIRECTOR"), alert)
+    if resumed:
+        invalidate_status_cache()
+    return resumed
 
 
 def resume_interrupted_missions() -> list:

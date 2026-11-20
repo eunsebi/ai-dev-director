@@ -133,7 +133,8 @@ def step_failed(run_id: str, to_state: str, details: str) -> None:
 # Missions run for many minutes; without the console open nobody saw that one finished, failed or paused for the
 # usage limit. Each event goes to the Discord webhook (and, for the end of a mission, the Mac banner).
 # config.yaml `alerts.discord_events` picks which kinds are sent; by default all of them.
-MISSION_EVENTS = ("mission_start", "step", "mission_end", "apply", "stopped")
+# fork 2026-11-20: review = 적용 전 검수 보고서, limit = 한도가 풀려 자동으로 이어서 진행
+MISSION_EVENTS = ("mission_start", "step", "mission_end", "apply", "stopped", "review", "limit")
 
 
 def discord_events() -> set:
