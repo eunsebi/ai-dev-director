@@ -65,3 +65,12 @@ def test_busy_is_reported_as_failure(monkeypatch, tmp_path, capsys):
 def test_bridge_accepts_claude_code_as_source():
     text = (ROOT / "companion_server.py").read_text(encoding="utf-8")
     assert "source = 'claude-code' if payload.get('source') == 'claude-code' else 'solomon'" in text
+
+
+def test_server_run_does_not_shadow_threading():
+    """2026-11-20: run() 안의 `import threading`이 모듈 threading을 가려 감시 스레드 시작 줄에서 UnboundLocalError로 서버가 죽었다."""
+    import ast
+    tree = ast.parse((ROOT / "companion_server.py").read_text(encoding="utf-8"))
+    run = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run")
+    local_imports = [a.name for n in ast.walk(run) if isinstance(n, ast.Import) for a in n.names]
+    assert "threading" not in local_imports
