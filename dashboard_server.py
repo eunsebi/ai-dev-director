@@ -977,7 +977,7 @@ def stop_missions(reason: str = "", mission_id: Optional[str] = None, by: str = 
 
 
 def decide_mission(mission_id: str, action: str, reason: str = "", max_steps: Optional[int] = None,
-                   on_conflict: str = "block", by: str = "HUMAN") -> dict:
+                   on_conflict: str = "block", by: str = "HUMAN", force: bool = False) -> dict:
     """A decision about a finished mission: apply its deliverable, discard it, extend its budget and continue,
     or send a blocked step back to HEAD planning. The stopped run itself is never approved by this."""
     from core.mission import deliverable_run_id
@@ -995,6 +995,11 @@ def decide_mission(mission_id: str, action: str, reason: str = "", max_steps: Op
         rid = deliverable_run_id(m)
         if not rid:
             return {"status": "blocked", "blocks": ["no PASSED milestone to apply"]}
+        # fork 2026-11-21: 검수 보고서를 만드는 중이면 적용하지 않는다(적용 뒤 작업본 정리로 검수가 중단됐음).
+        # 기다리지 않고 적용하려면 force(콘솔에서 확인 창을 거친 경우만).
+        from core import pre_apply_review
+        if not force and pre_apply_review.is_running(m.get("review")):
+            return {"status": "review_running", "message": "검수 보고서를 만드는 중이에요. 끝난 뒤 적용해 주세요."}
         # fork 2026-11-07: a project with `apply_pipeline` gets apply → checks → manual checks → commit → cleanup → record
         if project_pipeline(load_config(), m.get("project_path", "")) is not None:
             if m.get("status") == "RUNNING":
@@ -3486,7 +3491,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 result = decide_mission(params.get('mission_id', [''])[0], params.get('action', [''])[0],
                                         reason=params.get('reason', [''])[0], max_steps=int(params.get('max_steps', ['0'])[0] or 0) or None,
-                                        on_conflict=params.get('on_conflict', ['block'])[0], by="HUMAN")
+                                        on_conflict=params.get('on_conflict', ['block'])[0], by="HUMAN",
+                                        force=params.get('force', [''])[0] == '1')
             except Exception as e:
                 result = {"status": "error", "error": str(e)[:300]}
             self._send_json(result, 200 if result.get("status") not in ("error",) else 400)

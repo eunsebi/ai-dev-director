@@ -192,7 +192,7 @@ function liveModel(){
   return {mode:'live',working,assign:assignment(),...phaseOf(working,verifying,!!(focus&&focus.live)),
     mission:focus&&{goal:focus.goal,project:focus.project,status:focus.status,blocked_reason:focus.blocked_reason,live:focus.live,max:Math.max(focus.max_steps||0,focus.steps.length),
       steps:focus.steps.map(s=>({index:s.index,state:s.state,tests:s.tests})),passed:focus.passed_steps,updated:utc(focus.updated_at),id:focus.mission_id,
-      deliverable:focus.deliverable,applied:focus.applied,applyState:focus.apply_state,source:focus.source,profile:focus.profile,delivery:focus.delivery},
+      deliverable:focus.deliverable,applied:focus.applied,applyState:focus.apply_state,source:focus.source,profile:focus.profile,delivery:focus.delivery,review:focus.review},
     usage:usage[win]||{by_role:{},by_provider:{},total:{calls:0,seconds:0,tokens:0,exact_tokens:0}},windows:{mission:!!usage.mission,today:!!usage.today,all:!!usage.all},
     calls:(a.recent_calls||[]).slice(0,30).map(c=>({key:c.at+c.role+c.provider,role:c.role,provider:c.provider,seconds:c.seconds,tokens:c.tokens,exact:c.exact,status:c.status,at:utc(c.at),
       reason:c.reason,detail:c.reason_detail,hint:c.reason_hint,run:c.run_id})),
@@ -259,7 +259,7 @@ async function decideMission(id,action,extra){
     const res=await fetch('/ops/mission/decide',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},body});
     const out=await res.json().catch(()=>({}));
     const msg={applied:'원본에 적용했습니다 · '+(out.files||[]).length+'개 파일',blocked:'적용할 수 없습니다 · '+((out.blocks||[]).join('; ')||'').slice(0,160),discarded:'결과물을 폐기했습니다',resumed:'미션을 이어서 진행합니다 (단계 예산 '+out.max_steps+')',busy:out.message||'다른 작업이 진행 중입니다',
-      pipeline_started:'적용 절차를 시작했습니다 · '+(out.steps||[]).join(' → '),continued:'확인했습니다 · 다음 단계를 진행합니다',rework:'실패로 기록했습니다 · 원본을 되돌리고 HEAD에 재작업을 맡깁니다'}[out.status]||(out.status+' '+(out.error||out.reason||''));
+      review_running:out.message||'검수 보고서를 만드는 중이에요. 끝난 뒤 적용해 주세요.',pipeline_started:'적용 절차를 시작했습니다 · '+(out.steps||[]).join(' → '),continued:'확인했습니다 · 다음 단계를 진행합니다',rework:'실패로 기록했습니다 · 원본을 되돌리고 HEAD에 재작업을 맡깁니다'}[out.status]||(out.status+' '+(out.error||out.reason||''));
     notice(msg);Trinity.pulse(out.status==='applied'?PULSE.done:out.status==='blocked'?PULSE.warn:PULSE.ok);}
   catch(e){notice('요청 실패 · '+e.message);}
   finally{deliveryBusy=false;pollActivity();}
@@ -274,15 +274,32 @@ function paintDelivery(m){
   const head=el('div','','delivery-head');head.append(el('span',(ms.source==='solomon'?'솔로몬 지시 · ':'')+'결과물','kicker'),el('span',label,'badge '+cls));box.append(head);
   if(ms.applied&&ms.applied.files)box.append(el('small',ms.applied.files.slice(0,6).join(', ')+(ms.applied.files.length>6?' 외 '+(ms.applied.files.length-6)+'개':''),'ai-sub'));
   if(state==='blocked'&&ms.applied&&ms.applied.blocks)box.append(el('small',ms.applied.blocks.join('; ').slice(0,220),'ai-sub'));
+  const rv=reviewView(ms.review);
+  if(rv&&state!=='applied'&&state!=='discarded'){const line=el('div','','delivery-head');line.append(el('span','적용 전 검수','kicker'),el('span',rv.label,'badge '+rv.cls));box.append(line);
+    if(rv.note)box.append(el('small',rv.note,'ai-sub'));}
   if(dv)paintPipeline(box,ms,dv);
   if(!pipeBusy&&state!=='applied'&&state!=='discarded'){
     const row=el('div','','delivery-actions');
-    const apply=el('button','원본에 적용');apply.type='button';apply.onclick=()=>decideMission(ms.id,'apply',{on_conflict:state==='blocked'?'skip':'block'});
+    const apply=el('button',rv&&rv.running?'원본에 적용 (검수 중)':'원본에 적용');apply.type='button';
+    if(rv&&rv.running)apply.className='ghost';
+    apply.onclick=()=>{const opts={on_conflict:state==='blocked'?'skip':'block'};
+      if(rv&&rv.running){if(!confirm('적용 전 검수가 아직 진행 중이에요('+rv.minutes+'분째). 검수 보고서를 기다리지 않고 지금 적용할까요?\n지금 적용하면 이번 검수는 중단돼요.'))return;opts.force='1';}
+      decideMission(ms.id,'apply',opts);};
     const more=el('button','이어서 진행');more.type='button';more.onclick=()=>decideMission(ms.id,'extend');
     const drop=el('button','폐기');drop.type='button';drop.className='ghost';drop.onclick=()=>{if(confirm('이 미션의 작업본을 폐기할까요? 기록은 남습니다.'))decideMission(ms.id,'discard');};
     row.append(apply,more,drop);box.append(row);
     if(state==='blocked')box.append(el('small','"원본에 적용"을 다시 누르면 충돌 파일만 건너뛰고 나머지를 적용합니다.','ai-sub'));
   }
+}
+// fork 2026-11-21: 적용 전 검수 상태(running이면 「원본에 적용」 전에 확인). 45분 넘은 running은 멈춘 것으로 본다.
+const REVIEW_KO={ok:['🟢 적용 권장','ok'],warn:['🟡 확인 필요','warn'],fail:['🔴 적용 비권장','bad'],error:['⚠ 검수 실패','bad']};
+function reviewView(r){
+  if(!r||!r.status)return null;
+  if(r.status==='running'){const mins=Math.max(0,Math.floor((Date.now()-utc(r.started_at))/60000));
+    if(mins>=45)return {label:'검수 응답 없음 · '+mins+'분',cls:'warn',note:'검수가 너무 오래 걸려요. 결과를 직접 확인한 뒤 적용해 주세요.',running:false,minutes:mins};
+    return {label:'🔎 검수 중 · '+mins+'분째',cls:'run',note:'테스트·화면 캡처·Claude 검토를 하고 있어요. 보고서가 나온 뒤 「원본에 적용」을 눌러 주세요.',running:true,minutes:mins};}
+  const [label,cls]=REVIEW_KO[r.status]||[r.status,''];
+  return {label,cls,note:(r.summary||'').slice(0,240),running:false,minutes:0};
 }
 // fork 2026-11-07: delivery pipeline (apply → checks → manual checks such as ⌘U → commit → cleanup → record)
 const PIPE_MARK={pending:'○',running:'◐',ok:'✓',warn:'⚠',failed:'✕',waiting:'⏳',skipped:'–'};

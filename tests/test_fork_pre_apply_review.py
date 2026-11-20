@@ -126,3 +126,89 @@ def test_no_review_without_config(tmp_path, monkeypatch, sent):
     m = runner.create(str(tmp_path / "proj"), "double", OrderSchema(**ORDER), config={"autonomy": {"auto_apply": "off"}})
     done = runner.run(m["mission_id"])
     assert "review" not in done and not any("검수" in t for t, _ in sent)
+
+
+# fork 2026-11-21: 검수 진행 상태 — 검수 중 적용으로 작업본이 정리돼 검수가 중단된 일(ClipGuard M4g) 재발 방지
+def test_is_running_and_stale():
+    from datetime import datetime, timedelta
+    now = datetime(2026, 11, 21, 0, 0, 0)
+    fresh = {"status": "running", "started_at": (now - timedelta(minutes=8)).isoformat()}
+    stale = {"status": "running", "started_at": (now - timedelta(minutes=50)).isoformat()}
+    assert par.is_running(fresh, now=now)
+    assert not par.is_running(stale, now=now)
+    assert not par.is_running({"status": "ok"}, now=now) and not par.is_running(None, now=now)
+
+
+def test_review_is_marked_running_while_it_works(tmp_path, monkeypatch, sent):
+    proj = str(tmp_path / "proj")
+    plans = [{"status": "DONE", "summary": "done", "reason": "", "order": None}]
+    factory = mission_factory(monkeypatch, plans, [])
+    cfg = {"projects": {proj: {"pre_apply_review": {"checks": [], "claude": {"model": "sonnet"}}}}}
+
+    def with_cfg():
+        orch = factory()
+        orch.config.update(cfg)
+        return orch
+    store = MissionStore(tmp_path / "missions")
+    seen = {}
+
+    def fake_claude(facts, diff_text, worktree, report_dir, opts, config):
+        mid = next(p.stem for p in (tmp_path / "missions").glob("*.json"))
+        seen["during"] = (store.load(mid) or {}).get("review")
+        return {"verdict": "ok", "summary": "좋아요."}
+    monkeypatch.setattr(par, "claude_review", fake_claude)
+    monkeypatch.setattr(par, "ROOT", tmp_path / "director")
+    runner = MissionRunner(with_cfg, store)
+    m = runner.create(proj, "double", OrderSchema(**ORDER), config={"autonomy": {"auto_apply": "off"}})
+    done = runner.run(m["mission_id"])
+    assert seen["during"]["status"] == "running" and seen["during"]["started_at"]
+    assert done["review"]["status"] == "ok"
+    assert store.load(m["mission_id"])["review"]["status"] == "ok"
+
+
+def test_review_crash_is_recorded_and_alerted(tmp_path, monkeypatch, sent):
+    proj = str(tmp_path / "proj")
+    plans = [{"status": "DONE", "summary": "done", "reason": "", "order": None}]
+    factory = mission_factory(monkeypatch, plans, [])
+    cfg = {"projects": {proj: {"pre_apply_review": {"checks": [], "claude": {"model": "sonnet"}}}}}
+
+    def with_cfg():
+        orch = factory()
+        orch.config.update(cfg)
+        return orch
+
+    def boom(*a, **k):
+        raise FileNotFoundError("작업본이 사라졌어요")
+    monkeypatch.setattr(par, "claude_review", boom)
+    monkeypatch.setattr(par, "ROOT", tmp_path / "director")
+    store = MissionStore(tmp_path / "missions")
+    runner = MissionRunner(with_cfg, store)
+    m = runner.create(proj, "double", OrderSchema(**ORDER), config={"autonomy": {"auto_apply": "off"}})
+    runner.run(m["mission_id"])
+    review = store.load(m["mission_id"])["review"]
+    assert review["status"] == "error" and "작업본" in review["summary"]
+    assert any("검수 보고서를 만들지 못했어요" in t for t, _ in sent)
+
+
+def test_apply_waits_for_a_running_review_unless_forced(tmp_path, monkeypatch):
+    from datetime import datetime
+    import dashboard_server as ds
+    import core.mission as cm
+    store = MissionStore(tmp_path / "missions")
+    m = {"mission_id": "MSN-T", "project_path": str(tmp_path / "proj"), "status": "DONE", "steps": [],
+         "review": {"status": "running", "started_at": datetime.utcnow().isoformat()}}
+    store.save(m)
+    monkeypatch.setattr(ds, "MissionStore", lambda *a, **k: store)
+    monkeypatch.setattr(cm, "deliverable_run_id", lambda mission: "RUN-T")
+    started = []
+
+    class FakePipe:
+        def start(self, mission_id, rid, by="HUMAN", on_conflict="block"):
+            started.append((mission_id, rid))
+            return {"status": "pipeline_started", "steps": []}
+    monkeypatch.setattr(ds, "project_pipeline", lambda config, path: {})
+    monkeypatch.setattr(ds, "delivery_pipeline", lambda: FakePipe())
+    out = ds.decide_mission("MSN-T", "apply")
+    assert out["status"] == "review_running" and not started
+    out = ds.decide_mission("MSN-T", "apply", force=True)
+    assert out["status"] == "pipeline_started" and started == [("MSN-T", "RUN-T")]

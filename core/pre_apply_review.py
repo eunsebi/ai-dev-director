@@ -268,6 +268,29 @@ def console_link(config: Optional[dict]) -> str:
     return f"https://{hosts[0]}" if hosts and isinstance(hosts[0], str) else "http://127.0.0.1:8081"
 
 
+# fork 2026-11-21: 검수 진행 상태. running 동안은 「원본에 적용」을 막는다(검수 중 적용 → 작업본 정리 → 검수 중단, ClipGuard M4g).
+RUNNING_STALE_MINUTES = 45
+
+
+def mark_state(store, mission: Dict[str, Any], review: Dict[str, Any]) -> None:
+    """미션 JSON의 review를 바로 저장한다(콘솔이 검수 중인지 보여 주고, 적용 버튼이 이를 본다)."""
+    latest = store.load(mission["mission_id"]) or mission
+    latest["review"] = review
+    store.save(latest)
+    mission["review"] = review
+
+
+def is_running(review: Optional[Dict[str, Any]], now: Optional[datetime] = None) -> bool:
+    """검수가 아직 도는 중인지. 오래(45분) 지난 running은 멈춘 것으로 보고 막지 않는다."""
+    if not isinstance(review, dict) or review.get("status") != "running":
+        return False
+    try:
+        started = datetime.fromisoformat(str(review.get("started_at")))
+    except (TypeError, ValueError):
+        return True
+    return (now or datetime.utcnow()) - started < timedelta(minutes=RUNNING_STALE_MINUTES)
+
+
 def run_for_mission(mission: Dict[str, Any], config: Optional[dict], store, alert: Callable[..., Any],
                     notify: Callable[..., Any], checks_runner=None, claude_fn=None) -> Optional[Dict[str, Any]]:
     from core.mission import deliverable_run_id
@@ -284,6 +307,7 @@ def run_for_mission(mission: Dict[str, Any], config: Optional[dict], store, aler
         return None
     report_dir = ROOT / "runs" / rid / "review"
     report_dir.mkdir(parents=True, exist_ok=True)
+    mark_state(store, mission, {"status": "running", "run_id": rid, "started_at": datetime.utcnow().isoformat()})
     alert("review", mission, "🔎 검수 시작", ["결과물 작업본에서 검사와 Claude 검수를 돌려요. 끝나면 보고서를 보내 드려요."],
           dedupe=f"review-start:{rid}")
     man = rm.tree_manifest(rid)
