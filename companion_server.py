@@ -346,7 +346,6 @@ def run():
     server.bridge = SolomonBridge(d, config.get('allowed_projects', []))
     threading.Thread(target=limit_resume_loop, args=(server,), name='director-limit-resume', daemon=True).start()
     if (d.load_config().get('autonomy') or {}).get('resume_on_start'):
-        import threading
         threading.Thread(target=d.resume_interrupted_missions, name='director-mission-resume', daemon=True).start()
     server.stopping = False
     print('AI DEV × SOLOMON http://127.0.0.1:' + str(server.server_address[1]), flush=True)
